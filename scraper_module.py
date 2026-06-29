@@ -291,7 +291,8 @@ def get_mock_matches() -> list:
             "duration": 150,
             "iframe_url": "https://ex.roooom.online/?alba-player=home1",
             "link": "",
-            "status_class": "live"
+            "status_class": "live",
+            "match_url": "https://kooracitty.com/colombia-vs-portugal-mock-1/"
         },
         {
             "event_id": "algeria-vs-austria-mock-2",
@@ -309,7 +310,8 @@ def get_mock_matches() -> list:
             "duration": 150,
             "iframe_url": "https://ex.roooom.online/?alba-player=home2",
             "link": "",
-            "status_class": "not-started"
+            "status_class": "not-started",
+            "match_url": "https://kooracitty.com/algeria-vs-austria-mock-2/"
         },
         {
             "event_id": "south-africa-vs-canada-mock-3",
@@ -327,7 +329,8 @@ def get_mock_matches() -> list:
             "duration": 150,
             "iframe_url": "",
             "link": "",
-            "status_class": "finished"
+            "status_class": "finished",
+            "match_url": "https://kooracitty.com/south-africa-vs-canada-mock-3/"
         }
     ]
     return mock_data
@@ -566,7 +569,8 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
             "duration": 150,
             "iframe_url": iframe_url,
             "link": "",
-            "status_class": status_class
+            "status_class": status_class,
+            "match_url": match_data["match_url"]
         })
 
     return parsed_matches, new_translations_list, updated_matches_cache
