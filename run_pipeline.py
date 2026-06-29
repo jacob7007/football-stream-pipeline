@@ -185,14 +185,14 @@ def main():
             try:
                 sheets_module.save_new_team_translations_separated(sheets_client, new_translations, args.sheet)
             except Exception as e:
-                logger.error(f"Error saving translations: {e}", indent=4)
+                logger.error(f"Error saving translations: {e}")
         if updated_matches_cache:
             print()
             logger.info(f"Saving {len(updated_matches_cache)} matches cache back to Google Sheets...")
             try:
                 sheets_module.save_matches_cache(sheets_client, updated_matches_cache, args.sheet)
             except Exception as e:
-                logger.error(f"Error saving matches cache: {e}", indent=4)
+                logger.error(f"Error saving matches cache: {e}")
 
     # Set up Telegram reporting if requested
     TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8834247606:AAHKuuiL1TIjWo3nPJjMBfonSrm8hR_91NQ")
@@ -318,12 +318,12 @@ def main():
                 post_data = posts_map.get(post_id)
                 if not post_data:
                     # Fallback to fetching it directly if not found in list
-                    logger.warning(f"Post ID {post_id} not found in pre-fetched list. Fetching directly...", indent=4)
+                    logger.warning(f"Post ID {post_id} not found in pre-fetched list. Fetching directly...")
                     try:
                         post_data = blogger_module.fetch_post(blogger_session, BLOG_A_ID, post_id)
                         posts_map[post_id] = post_data
                     except Exception as ex:
-                        logger.error(f"Error fetching post {post_id}: {ex}", indent=4)
+                        logger.error(f"Error fetching post {post_id}: {ex}")
                         continue
 
                 current_content = post_data.get("content", "")
@@ -341,12 +341,12 @@ def main():
                         iframe_link = event['iframe_url']
                         if len(iframe_link) > 60:
                             iframe_link = iframe_link[:60] + "..."
-                        logger.success(f"Successfully patched post iframe URL to: {iframe_link}", indent=4)
+                        logger.success(f"Successfully patched post iframe URL to: {iframe_link}")
                     # Update our cache with the patched content
                     post_data["content"] = patched_content
                     blogger_updates_made += 1
                 except Exception as ex:
-                    logger.error(f"Error patching/updating post {post_id}: {ex}", indent=4)
+                    logger.error(f"Error patching/updating post {post_id}: {ex}")
                     continue
 
         # Write changes to Sheets
@@ -358,9 +358,9 @@ def main():
                 logger.info("Writing updated slot states back to Google Sheets...")
                 try:
                     sheets_module.update_changed_slots(sheets_client, changed_slots, args.sheet)
-                    logger.success("Sheets updated successfully.", indent=4)
+                    logger.success("Sheets updated successfully.")
                 except Exception as e:
-                    logger.error(f"Error writing to Google Sheet: {e}", indent=4)
+                    logger.error(f"Error writing to Google Sheet: {e}")
     else:
         print()
         logger.success("Slot allocations and the blog streams are already up to date. Skipping slot updates.")
