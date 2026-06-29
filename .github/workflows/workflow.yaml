@@ -1,11 +1,8 @@
 name: Football Stream Automation Pipeline
 
 on:
-  schedule:
-    # Run every 15 minutes
-    - cron: '*/15 * * * *'
   workflow_dispatch:
-    # Allow manual runs from the GitHub Actions tab
+    # Allow manual runs and API triggers from cron-job.org
 
 jobs:
   run-pipeline:
