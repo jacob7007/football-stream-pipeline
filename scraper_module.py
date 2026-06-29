@@ -18,6 +18,16 @@ HEADERS = {
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "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")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+SCRAPING_PROXY = os.environ.get("SCRAPING_PROXY")
+
+def get_request_proxies():
+    if SCRAPING_PROXY:
+        return {
+            "http": SCRAPING_PROXY,
+            "https": SCRAPING_PROXY
+        }
+    return None
+
 # Reconfigure stdout/stderr to use UTF-8 so Arabic team names display correctly on Windows terminals
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
@@ -232,7 +242,7 @@ def extract_stream_iframe(match_url: str) -> str:
     and returns its src URL if found. Returns None otherwise.
     """
     try:
-        resp = requests.get(match_url, headers=HEADERS, timeout=12)
+        resp = requests.get(match_url, headers=HEADERS, timeout=12, proxies=get_request_proxies())
         if resp.status_code != 200:
             return None
         
@@ -343,7 +353,7 @@ def scrape_live_matches(use_mock: bool = False) -> list:
         allowed = page["allowed_statuses"]
         print(f"[Scraper] Fetching matches page from {url}...", file=sys.stderr)
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=20)
+            resp = requests.get(url, headers=HEADERS, timeout=20, proxies=get_request_proxies())
             resp.raise_for_status()
         except Exception as e:
             print(f"[Scraper] Failed to fetch page {url}: {e}", file=sys.stderr)

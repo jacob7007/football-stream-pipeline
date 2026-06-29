@@ -28,11 +28,11 @@ jobs:
 
     - name: Run Stream Pipeline
       env:
-        PYTHONUNBUFFERED: "1"
         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         BLOGGER_REFRESH_TOKEN: ${{ secrets.BLOGGER_REFRESH_TOKEN }}
         BLOGGER_CLIENT_ID: ${{ secrets.BLOGGER_CLIENT_ID }}
         BLOGGER_CLIENT_SECRET: ${{ secrets.BLOGGER_CLIENT_SECRET }}
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        SCRAPING_PROXY: ${{ secrets.SCRAPING_PROXY }}
       run: |
         python run_pipeline.py --auto
