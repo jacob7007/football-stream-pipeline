@@ -23,6 +23,22 @@ def parse_iso_time(time_str: str) -> datetime:
         except Exception:
             return datetime.min
 
+def format_to_user_style(iso_time_str: str) -> str:
+    """
+    Converts ISO 8601 time string (GMT+1) to user format: "29 July - 21:00 (UTC+1)"
+    """
+    if not iso_time_str:
+        return ""
+    try:
+        clean_str = re.sub(r'([+-]\d{2}:?\d{2}|Z)$', '', iso_time_str.strip())
+        dt = datetime.fromisoformat(clean_str)
+        day = dt.day
+        month_name = dt.strftime("%B")
+        time_part = dt.strftime("%H:%M")
+        return f"{day} {month_name} - {time_part} (UTC+1)"
+    except Exception:
+        return iso_time_str
+
 def reconcile_state(sheet_slots: list, scraped_events: list) -> list:
     """
     Compares the Google Sheet slot states with the scraped live events.
@@ -164,7 +180,8 @@ def reconcile_state(sheet_slots: list, scraped_events: list) -> list:
             sheet_name = slot.get("event_name", "").strip()
             sheet_kickoff = slot.get("kickoff_time", "").strip()
             
-            if sheet_name != event_name or sheet_kickoff != event["time"]:
+            expected_kickoff = format_to_user_style(event["time"])
+            if sheet_name != event_name or sheet_kickoff != expected_kickoff:
                 actions.append({
                     "action_type": "update_sheet_only",
                     "slot": slot,

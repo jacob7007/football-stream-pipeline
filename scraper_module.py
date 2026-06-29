@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+import logger
 
 HOMEPAGE_URL = "https://kooracitty.com/"
 HEADERS = {
@@ -43,24 +44,23 @@ def slugify(text: str) -> str:
     text = re.sub(r'[-\s]+', '-', text)
     return text.strip('-')
 
-def generate_stable_event_id(t1_ar: str, t1_en: str, t2_ar: str, t2_en: str, kickoff_iso: str) -> str:
+def generate_stable_event_id(t1_code: str, t2_code: str, kickoff_iso: str) -> str:
     """
-    Generates a unique, stable event ID based on team names and kickoff time.
+    Generates a unique, stable event ID in format: code1-vs-code2-yy-mm-dd
+    where team codes are lowercase.
     """
-    t1 = t1_en if t1_en else t1_ar
-    t2 = t2_en if t2_en else t2_ar
-    t1_slug = slugify(t1)
-    t2_slug = slugify(t2)
+    c1 = (t1_code or "team1").strip().lower()
+    c2 = (t2_code or "team2").strip().lower()
     
-    # Extract date and time to avoid format shifts
-    match = re.search(r'(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})', kickoff_iso)
+    # Extract date parts: yy-mm-dd
+    match = re.search(r'(\d{2})(\d{2})-(\d{2})-(\d{2})', kickoff_iso)
     if match:
-        date_str, hh, mm = match.groups()
-        time_part = f"{date_str}-{hh}-{mm}"
+        _, yy, mm, dd = match.groups()
+        date_part = f"{yy}-{mm}-{dd}"
     else:
-        time_part = slugify(kickoff_iso)
+        date_part = "26-00-00"
         
-    return f"{t1_slug}-vs-{t2_slug}-{time_part}"
+    return f"{c1}-vs-{c2}-{date_part}"
 
 def normalize_arabic(text: str) -> str:
     """
@@ -174,9 +174,10 @@ def fetch_openrouter_mappings(unique_names: list) -> dict:
     system_prompt = (
         "You are a football team database helper. You are given a list of football team/country names in Arabic.\n"
         "For each name, output a JSON object containing:\n"
-        '1. \"nameEn\": The standard English name of the team/club (e.g. \"Colombia\", \"Portugal\", \"Real Madrid\", \"Al Ahly\").\n'
-        '2. \"code\": The 2-letter lowercase ISO country code if the team is a national team (e.g. \"co\" for Colombia, \"pt\" for Portugal, \"ma\" for Morocco). '
-        'If it is a club team or club, output \"club\".\n\n'
+        '1. "nameEn": The standard English name of the team/club (e.g. "Colombia", "Portugal", "Real Madrid", "Al Ahly", "Barcelona").\n'
+        '2. "code":\n'
+        '   - If it is a national team, output the 2-letter lowercase ISO country code (e.g. "co" for Colombia, "pt" for Portugal, "ma" for Morocco).\n'
+        '   - If it is a club team/club, output a standard 3-letter or 3-4 letter uppercase abbreviation/code for the club (e.g. "RMA" for Real Madrid, "FCB" for Barcelona, "WAC" for Wydad AC, "MUN" for Manchester United, "AHL" for Al Ahly).\n\n'
         "Respond ONLY with a JSON object where the keys are the input Arabic team names, and the values are the objects with 'nameEn' and 'code'. "
         "Do not write any markdown code block wrappers (like ```json), write only the raw JSON text."
     )
@@ -191,7 +192,7 @@ def fetch_openrouter_mappings(unique_names: list) -> dict:
     }
     
     for model in models:
-        print(f"[OpenRouter] Requesting team details using model: {model}", file=sys.stderr)
+        logger.info(f"OpenRouter: Requesting team details using model: {model}")
         payload = {
             "model": model,
             "messages": [
@@ -214,14 +215,14 @@ def fetch_openrouter_mappings(unique_names: list) -> dict:
                         lines = lines[:-1]
                     content = "\n".join(lines).strip()
                     
-                print(f"[OpenRouter] API call successful using model: {model}", file=sys.stderr)
+                logger.success(f"OpenRouter: API call successful using model: {model}")
                 return json.loads(content)
             else:
-                print(f"[OpenRouter] Error with model {model}: HTTP {resp.status_code} - {resp.text}", file=sys.stderr)
+                logger.error(f"OpenRouter: Error with model {model}: HTTP {resp.status_code} - {resp.text}")
         except Exception as e:
-            print(f"[OpenRouter] Exception with model {model}: {e}", file=sys.stderr)
+            logger.error(f"OpenRouter: Exception with model {model}: {e}")
             
-    print("[OpenRouter] All models failed. Falling back to local offline mapping rules.", file=sys.stderr)
+    logger.warning("OpenRouter: All models failed. Falling back to local offline mapping rules.")
     return {}
 
 def parse_match_time(date_str: str, time_str: str) -> str:
@@ -331,13 +332,19 @@ def get_mock_matches() -> list:
     ]
     return mock_data
 
-def scrape_live_matches(use_mock: bool = False) -> list:
+def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, matches_cache: dict = None) -> tuple:
     """
     Main function to scrape matches. Can be toggled to mock mode.
+    Returns (parsed_matches, new_translations_list, updated_matches_cache).
     """
+    if team_translations is None:
+        team_translations = {}
+    if matches_cache is None:
+        matches_cache = {}
+
     if use_mock:
-        print("[Scraper] Using Mock Scraper Data.", file=sys.stderr)
-        return get_mock_matches()
+        logger.info("Scraper: Using Mock Scraper Data.")
+        return get_mock_matches(), [], {}
 
     pages = [
         {"url": "https://kooracitty.com/matches-today-1/", "allowed_statuses": ["live", "not-started", "finished"]},
@@ -351,19 +358,19 @@ def scrape_live_matches(use_mock: bool = False) -> list:
     for page in pages:
         url = page["url"]
         allowed = page["allowed_statuses"]
-        print(f"[Scraper] Fetching matches page from {url}...", file=sys.stderr)
+        logger.info(f"Scraper: Fetching matches page from {url}...")
         try:
             resp = requests.get(url, headers=HEADERS, timeout=20, proxies=get_request_proxies())
             resp.raise_for_status()
         except Exception as e:
-            print(f"[Scraper] Failed to fetch page {url}: {e}", file=sys.stderr)
+            logger.error(f"Scraper: Failed to fetch page {url}: {e}")
             continue
 
         soup = BeautifulSoup(resp.text, 'html.parser')
         match_elements = soup.select('.AY_Match')
         # Filter out "No matches today" placeholders
         real_matches = [m for m in match_elements if not m.select_one('.no-data__msg')]
-        print(f"[Scraper] Found {len(real_matches)} matches on {url.split('/')[-2]} page.", file=sys.stderr)
+        logger.info(f"Scraper: Found {len(real_matches)} matches on {url.split('/')[-2]} page.")
 
         for match in real_matches:
             classes = match.get('class', [])
@@ -418,47 +425,130 @@ def scrape_live_matches(use_mock: bool = False) -> list:
                 "status_class": status_class
             })
 
-    print(f"[Scraper] Processing {len(matches_to_process)} total scraped matches...", file=sys.stderr)
-    print(f"[Scraper] Sending {len(unique_team_names)} unique teams to OpenRouter for translation & mapping...", file=sys.stderr)
+    logger.info(f"Scraper: Processing {len(matches_to_process)} total scraped matches...")
+    
+    # Send only missing team names to OpenRouter
+    missing_team_names = [name for name in unique_team_names if name not in team_translations]
+    
+    new_translations_list = []
+    
+    if missing_team_names:
+        logger.info(f"Scraper: Sending {len(missing_team_names)} new/untranslated teams to OpenRouter...")
+        llm_mappings = fetch_openrouter_mappings(missing_team_names)
+        
+        # Merge new translations into cache
+        for name in missing_team_names:
+            info = get_mapping_normalized(llm_mappings, name) or get_local_fallback_mapping(name)
+            
+            # Determine logo URL and team type
+            code = info.get("code", "club")
+            if code.islower() and len(code) == 2:
+                team_type = "national"
+                logo_url = f"https://flagcdn.com/{code.lower()}.svg"
+            else:
+                team_type = "club"
+                # Find matching match_data to extract original image
+                logo_url = ""
+                for m in matches_to_process:
+                    if m["team1_name"] == name:
+                        logo_url = m["team1_orig_img"]
+                        break
+                    elif m["team2_name"] == name:
+                        logo_url = m["team2_orig_img"]
+                        break
+            
+            team_translations[name] = {
+                "nameEn": info.get("nameEn", ""),
+                "code": code,
+                "logo_url": logo_url,
+                "type": team_type
+            }
+            new_translations_list.append((name, info.get("nameEn", ""), code, logo_url, team_type))
+    else:
+        print()
+        logger.success("Scraper: All teams found in translation cache. Skipping OpenRouter.")
 
-    llm_mappings = fetch_openrouter_mappings(list(unique_team_names))
-    print("[Scraper] Mapping completed. Resolving match detail iframes...", file=sys.stderr)
+    logger.success("Scraper: Translation completed. Resolving match detail iframes.")
 
     parsed_matches = []
+    updated_matches_cache = {}
+    now_dt = datetime.now()
+
+
+
+    has_logged_fetching = False
     for idx, match_data in enumerate(matches_to_process, 1):
         t1_name = match_data["team1_name"]
         t2_name = match_data["team2_name"]
 
         # Resolve translation & flag/logo mapping
-        t1_info = get_mapping_normalized(llm_mappings, t1_name) or get_local_fallback_mapping(t1_name)
-        t2_info = get_mapping_normalized(llm_mappings, t2_name) or get_local_fallback_mapping(t2_name)
+        t1_info = team_translations.get(t1_name) or get_local_fallback_mapping(t1_name)
+        t2_info = team_translations.get(t2_name) or get_local_fallback_mapping(t2_name)
 
         t1_code = t1_info.get("code", "club")
         t2_code = t2_info.get("code", "club")
-
-        if t1_code not in ["club", "un"] and len(t1_code) == 2:
-            team1_img = f"https://flagcdn.com/{t1_code}.svg"
-        else:
-            team1_img = match_data["team1_orig_img"]
-
-        if t2_code not in ["club", "un"] and len(t2_code) == 2:
-            team2_img = f"https://flagcdn.com/{t2_code}.svg"
-        else:
-            team2_img = match_data["team2_orig_img"]
+        team1_img = t1_info.get("logo_url") or match_data["team1_orig_img"]
+        team2_img = t2_info.get("logo_url") or match_data["team2_orig_img"]
 
         formatted_time = parse_match_time(match_data["date_str"], match_data["time_str"])
         
-        # Scrape iframe for live player (do not skip if not found)
-        t1_en_log = t1_info.get("nameEn") or t1_name
-        t2_en_log = t2_info.get("nameEn") or t2_name
-        print(f"[Scraper] Fetching stream iframe for: {t1_en_log} vs {t2_en_log}...", file=sys.stderr)
-        iframe_url = extract_stream_iframe(match_data["match_url"]) or ""
-            
-        event_id = generate_stable_event_id(
-            t1_name, t1_info.get("nameEn", ""), 
-            t2_name, t2_info.get("nameEn", ""), 
-            formatted_time
-        )
+        # Parse kickoff time to check if kickoff is far in the future
+        kickoff_dt = datetime.min
+        try:
+            clean_time = re.sub(r'([+-]\d{2}:?\d{2}|Z)$', '', formatted_time)
+            kickoff_dt = datetime.fromisoformat(clean_time)
+        except Exception:
+            pass
+
+        # Check matches cache
+        cached_match = matches_cache.get(match_data["match_url"])
+        
+        status_class = match_data["status_class"]
+        if cached_match and cached_match.get("status_class") in ["finished", "manually-finished"]:
+            status_class = "finished"
+
+        is_finished = (status_class == "finished")
+        is_live = (status_class == "live")
+        
+        is_far_future = False
+        if status_class == "not-started" and kickoff_dt != datetime.min:
+            time_until_kickoff = (kickoff_dt - now_dt).total_seconds()
+            if time_until_kickoff > 20 * 60: # > 20 minutes away
+                is_far_future = True
+
+        iframe_url = ""
+        should_scrape = True
+
+        if is_finished:
+            should_scrape = False
+            iframe_url = ""
+        elif is_far_future:
+            should_scrape = False
+            iframe_url = cached_match.get("iframe_url", "") if cached_match else ""
+        elif is_live:
+            # Always scrape live matches to keep stream link fresh
+            should_scrape = True
+        else:
+            # Near kickoff (<= 20 mins)
+            if cached_match and cached_match.get("iframe_url"):
+                should_scrape = False
+                iframe_url = cached_match["iframe_url"]
+
+        if should_scrape:
+            if not has_logged_fetching:
+                print()
+                logger.info("Scraper: Fetching stream iframe.")
+                has_logged_fetching = True
+            iframe_url = extract_stream_iframe(match_data["match_url"]) or ""
+
+        # Update cache
+        updated_matches_cache[match_data["match_url"]] = {
+            "iframe_url": iframe_url,
+            "status_class": status_class,
+            "last_updated": now_dt.isoformat()
+        }
+
+        event_id = generate_stable_event_id(t1_code, t2_code, formatted_time)
 
         parsed_matches.append({
             "event_id": event_id,
@@ -476,13 +566,13 @@ def scrape_live_matches(use_mock: bool = False) -> list:
             "duration": 150,
             "iframe_url": iframe_url,
             "link": "",
-            "status_class": match_data["status_class"]
+            "status_class": status_class
         })
 
-    return parsed_matches
+    return parsed_matches, new_translations_list, updated_matches_cache
 
 if __name__ == "__main__":
     # Test execution
     print("Running scraper module test (Mock Mode)...")
-    res = scrape_live_matches(use_mock=True)
+    res, _, _ = scrape_live_matches(use_mock=True)
     print(json.dumps(res, indent=2, ensure_ascii=False))

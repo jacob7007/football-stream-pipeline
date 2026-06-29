@@ -10,6 +10,8 @@ import blogger_module
 import scraper_module
 import reconciler
 import patcher
+import logger
+import requests
 
 # Configure stdout/stderr for UTF-8
 sys.stdout.reconfigure(encoding='utf-8')
@@ -22,102 +24,237 @@ BLOG_B_PAGE_ID = "7306539215204955677"  # Match listing Page ID
 
 SPREADSHEET_NAME = "Matches - Slots state"
 
+def send_telegram_message(bot_token, chat_id, text):
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code != 200:
+            logger.error(f"Telegram: sendMessage failed (HTTP {r.status_code}): {r.text}")
+    except Exception as e:
+        logger.error(f"Telegram: Failed to send message: {e}")
+
+
+
 def main():
     parser = argparse.ArgumentParser(description="Football Stream Automation Pipeline")
     parser.add_argument("--mock", action="store_true", help="Run scraper in mock mode")
     parser.add_argument("--dry-run", action="store_true", help="Perform a dry run without making write calls to Sheets or Blogger")
     parser.add_argument("--auto", action="store_true", help="Skip user confirmation prompts (useful for GitHub Actions)")
     parser.add_argument("--sheet", type=str, default=SPREADSHEET_NAME, help="Google Sheets spreadsheet name or ID")
+    parser.add_argument("--telegram-report-chat-id", type=str, default="", help="Telegram chat ID to send the reconciliation report to")
     args = parser.parse_args()
 
-    print("==================================================")
-    print(f"Starting Stream Pipeline Run - {datetime.now().isoformat()}")
-    print(f"Flags: mock={args.mock}, dry_run={args.dry_run}, auto={args.auto}, sheet={args.sheet}")
-    print("==================================================")
+    logger.step_header("START", "Starting Stream Pipeline Run")
+    logger.info(f"Time: {datetime.now().isoformat()}")
+    logger.info(f"Flags: mock={args.mock}, dry_run={args.dry_run}, auto={args.auto}, sheet={args.sheet}")
+    print()
 
     # 1. Initialize Clients
-    print("\n[Step 1] Initializing API clients...")
+    logger.step_header("1/7", "Initializing API clients")
     try:
         sheets_client = sheets_module.get_gspread_client()
-        print("  - Google Sheets client authorized.")
+        logger.success("Google Sheets client authorized.")
     except Exception as e:
-        print(f"  - Error initializing Google Sheets client: {e}")
+        logger.error(f"Error initializing Google Sheets client: {e}")
         sys.exit(1)
 
     try:
         blogger_session = blogger_module.get_blogger_session()
-        print("  - Blogger API session authorized.")
+        logger.success("Blogger API session authorized.")
     except Exception as e:
-        print(f"  - Error initializing Blogger API session: {e}")
+        logger.error(f"Error initializing Blogger API session: {e}")
         sys.exit(1)
 
     # 2. Fetch sheet slots
-    print(f"\n[Step 2] Fetching slots from Google Sheet '{args.sheet}'...")
+    logger.step_header("2/7", f"Fetching slots from Google Sheet '{args.sheet}'")
     try:
         slots = sheets_module.fetch_all_slots(sheets_client, args.sheet)
-        print(f"  - Found {len(slots)} slot rows in Google Sheets:")
+        logger.info(f"Found {len(slots)} slot rows in Google Sheets:")
+        print()
+        
+        # Calculate dynamic padding for alignment
+        max_slot_len = max(len(s['slot'] if s.get('slot') else f"Row {s['row_num']}") for s in slots) if slots else 8
+        max_id_len = max(len(s['post_id']) for s in slots) if slots else 19
+        
+        aligned_events = []
         for s in slots:
+            ev_name = s.get('event_name') or '(free)'
+            # Replace ' vs ' with ' - ' in display
+            ev_name_clean = ev_name.replace(" vs ", " - ")
+            if " - " in ev_name_clean:
+                t1, t2 = ev_name_clean.split(" - ", 1)
+                aligned_events.append((t1.strip(), t2.strip()))
+            else:
+                aligned_events.append((ev_name_clean, ""))
+                
+        max_ev_t1 = max(len(item[0]) for item in aligned_events) if aligned_events else 15
+        max_ev_t2 = max(len(item[1]) for item in aligned_events) if aligned_events else 15
+        
+        for idx, s in enumerate(slots):
             slot_name = s['slot'] if s.get('slot') else f"Row {s['row_num']}"
-            slot_status = s['status'] if s.get('status') else "free"
-            print(f"    Slot: {slot_name} | ID: {s['post_id']} | Event: {s.get('event_name') or '(free)'} | Status: {slot_status}")
+            slot_status = (s['status'] if s.get('status') else "free").strip().lower()
+            
+            ev_t1, ev_t2 = aligned_events[idx]
+            if ev_t2:
+                aligned_ev = f"{ev_t1:<{max_ev_t1}} - {ev_t2:<{max_ev_t2}}"
+            else:
+                # it's '(free)'
+                aligned_ev = f"{ev_t1:<{max_ev_t1}}   {'':<{max_ev_t2}}"
+                
+            status_color = logger.COLOR_GREEN if slot_status == "active" else logger.COLOR_DARK_GRAY
+            status_styled = f"{status_color}{slot_status:<8}{logger.COLOR_RESET}"
+            
+            print(f"    Slot: {slot_name:<{max_slot_len}} | ID: {s['post_id']:<{max_id_len}} | Event: {aligned_ev} | Status: {status_styled}")
+            
     except Exception as e:
-        print(f"  - Error reading Google Sheet: {e}")
+        logger.error(f"Error reading Google Sheet: {e}")
         sys.exit(1)
 
     if not slots:
-        print("  - No slots defined in Google Sheets. Exiting.")
+        logger.warning("No slots defined in Google Sheets. Exiting.")
         sys.exit(0)
 
-    # 3. Scrape live matches
-    print("\n[Step 3] Scraping competitor live matches...")
+    # 2b. Fetch translation and matches caches from Google Sheets
+    logger.step_header("2b/7", "Fetching caches from Google Sheets")
+    team_translations = {}
+    matches_cache = {}
     try:
-        scraped_events = scraper_module.scrape_live_matches(use_mock=args.mock)
+        team_translations = sheets_module.fetch_team_translations_separated(sheets_client, args.sheet)
+        matches_cache = sheets_module.fetch_matches_cache(sheets_client, args.sheet)
+        logger.success(f"Loaded {len(team_translations)} team translations and {len(matches_cache)} matches from cache.")
+    except Exception as e:
+        logger.error(f"Error loading caches: {e}")
+
+    # 3. Scrape live matches
+    logger.step_header("3/7", "Scraping competitor live matches")
+    try:
+        scraped_events, new_translations, updated_matches_cache = scraper_module.scrape_live_matches(
+            use_mock=args.mock,
+            team_translations=team_translations,
+            matches_cache=matches_cache
+        )
         # Sort matches: live first, then upcoming (not-started), then finished (ended)
         status_priority = {"live": 1, "not-started": 2, "finished": 3}
         scraped_events.sort(key=lambda ev: (status_priority.get(ev.get("status_class", "not-started"), 2), ev["time"]))
-        print(f"  - Scraped {len(scraped_events)} total matches (live, upcoming, and ended).")
+        
+        logger.info(f"Scraped {len(scraped_events)} total matches:")
+        print()
+        
+        max_t1_len = max(len(ev['team1']['nameEn'] or ev['team1']['nameAr']) for ev in scraped_events) if scraped_events else 15
+        max_t2_len = max(len(ev['team2']['nameEn'] or ev['team2']['nameAr']) for ev in scraped_events) if scraped_events else 15
+        
         for idx, ev in enumerate(scraped_events, 1):
             t1 = ev['team1']['nameEn'] or ev['team1']['nameAr']
             t2 = ev['team2']['nameEn'] or ev['team2']['nameAr']
             status = ev.get('status_class', 'unknown').upper()
-            iframe_part = f" | iframe: {ev['iframe_url'][:60]}..." if ev['iframe_url'] else " | (No iframe)"
-            print(f"    [{idx}] {t1} vs {t2} | kickoff: {ev['time']} | status: {status}{iframe_part}")
+            
+            if ev['iframe_url']:
+                iframe_link = ev['iframe_url']
+                if len(iframe_link) > 30:
+                    iframe_link = iframe_link[:30] + "..."
+                iframe_part = f"iframe: {iframe_link}"
+            else:
+                iframe_part = "(No iframe)"
+            
+            aligned_teams = f"{t1:<{max_t1_len}} - {t2:<{max_t2_len}}"
+            
+            # Status colors
+            if status == "LIVE":
+                status_styled = f"{logger.COLOR_GREEN}{logger.COLOR_BOLD}{status:<11}{logger.COLOR_RESET}"
+            elif status == "NOT-STARTED":
+                status_styled = f"{logger.COLOR_YELLOW}{status:<11}{logger.COLOR_RESET}"
+            elif status == "FINISHED":
+                status_styled = f"{logger.COLOR_DARK_GRAY}{status:<11}{logger.COLOR_RESET}"
+            else:
+                status_styled = f"{status:<11}"
+                
+            # User friendly kickoff format
+            kickoff_str = reconciler.format_to_user_style(ev['time'])
+            print(f"    [{idx:2d}] {aligned_teams} | {kickoff_str} | {status_styled} | {iframe_part}")
+            
     except Exception as e:
-        print(f"  - Error during scraping: {e}")
+        logger.error(f"Error during scraping: {e}")
         sys.exit(1)
 
+    # Save cache if not dry-run
+    if not args.dry_run:
+        if new_translations:
+            print()
+            logger.info(f"Saving {len(new_translations)} new translations back to Google Sheets...")
+            try:
+                sheets_module.save_new_team_translations_separated(sheets_client, new_translations, args.sheet)
+            except Exception as e:
+                logger.error(f"Error saving translations: {e}", indent=4)
+        if updated_matches_cache:
+            print()
+            logger.info(f"Saving {len(updated_matches_cache)} matches cache back to Google Sheets...")
+            try:
+                sheets_module.save_matches_cache(sheets_client, updated_matches_cache, args.sheet)
+            except Exception as e:
+                logger.error(f"Error saving matches cache: {e}", indent=4)
+
+    # Set up Telegram reporting if requested
+    TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8834247606:AAHKuuiL1TIjWo3nPJjMBfonSrm8hR_91NQ")
+    send_report_chat_ids = [args.telegram_report_chat_id] if args.telegram_report_chat_id else []
+
     # 4. Reconcile states
-    print("\n[Step 4] Reconciling slot states with scraped matches...")
+    logger.step_header("4/7", "Reconciling slot states with scraped matches")
     # Filter events for slot reconciliation: must be live or not-started and have an iframe_url
     reconcile_events = [
         e for e in scraped_events
         if e.get("iframe_url") and e.get("status_class") in ["live", "not-started"]
     ]
-    print(f"  - Reconciling {len(reconcile_events)} active matches with streams (out of {len(scraped_events)} total matches).")
+    logger.info(f"Reconciling {len(reconcile_events)} active matches with streams (out of {len(scraped_events)} total matches).")
     actions = reconciler.reconcile_state(slots, reconcile_events)
     
     # Check if there are any non-trivial actions
     change_actions = [a for a in actions if a["action_type"] != "no_action"]
-    print(f"  - Reconciliation finished. Total actions: {len(actions)}, updates needed: {len(change_actions)}.")
+    logger.info(f"Reconciliation finished. Total actions: {len(actions)}, updates needed: {len(change_actions)}.")
+    print()
+    
     for act in actions:
-        # Prefix warnings or key updates
-        prefix = "    "
-        if act["action_type"] == "evict_and_assign":
-            prefix = "  ! "
-        elif act["action_type"] != "no_action":
-            prefix = "  * "
-        print(f"{prefix}[{act['action_type'].upper()}] {act['message']}")
+        action_type = act["action_type"]
+        message = act["message"]
+        
+        # Replace ' vs ' with ' - ' in action messages
+        message = message.replace(" vs ", " - ")
+        
+        if action_type == "no_action":
+            prefix = f"{logger.COLOR_DARK_GRAY}[ NO ACTION  ]{logger.COLOR_RESET}"
+            msg_styled = f"{logger.COLOR_DARK_GRAY}{message}{logger.COLOR_RESET}"
+        elif action_type == "assign_new":
+            prefix = f"{logger.COLOR_GREEN}{logger.COLOR_BOLD}[ ASSIGN NEW ]{logger.COLOR_RESET}"
+            msg_styled = f"{logger.COLOR_GREEN}{message}{logger.COLOR_RESET}"
+        elif action_type == "evict_and_assign":
+            prefix = f"{logger.COLOR_RED}{logger.COLOR_BOLD}[ EVICT&ASSIGN]{logger.COLOR_RESET}"
+            msg_styled = f"{logger.COLOR_RED}{message}{logger.COLOR_RESET}"
+        elif action_type == "update_iframe":
+            prefix = f"{logger.COLOR_BLUE}{logger.COLOR_BOLD}[ UPD IFRAME ]{logger.COLOR_RESET}"
+            msg_styled = f"{logger.COLOR_BLUE}{message}{logger.COLOR_RESET}"
+        elif action_type == "update_sheet_only":
+            prefix = f"{logger.COLOR_YELLOW}{logger.COLOR_BOLD}[ UPD SHEET  ]{logger.COLOR_RESET}"
+            msg_styled = f"{logger.COLOR_YELLOW}{message}{logger.COLOR_RESET}"
+        elif action_type == "free_slot":
+            prefix = f"{logger.COLOR_YELLOW}{logger.COLOR_BOLD}[ FREE SLOT  ]{logger.COLOR_RESET}"
+            msg_styled = f"{logger.COLOR_YELLOW}{message}{logger.COLOR_RESET}"
+        else:
+            prefix = f"[{action_type.upper()}]"
+            msg_styled = message
+            
+        print(f"    {prefix} {msg_styled}\n") # Adding empty line between actions!
 
     # 5. Handle Dry Run Announcement (we keep going to preview everything)
     if args.dry_run:
-        print("\n[Dry Run] --dry-run flag is active. Running in PREVIEW mode (no API writes will be made).")
+        logger.warning("dry-run flag is active. Running in PREVIEW mode (no API writes will be made).")
+        print()
 
     # 6. User Confirmation
     if not args.auto and not args.dry_run:
-        print("\nDo you want to proceed with executing the changes above?")
+        print(f"\n{logger.COLOR_BOLD}{logger.COLOR_YELLOW}Do you want to proceed with executing the changes above?{logger.COLOR_RESET}")
         confirm = input("Type 'yes' to proceed: ").strip().lower()
         if confirm != "yes":
-            print("Execution aborted by user.")
+            logger.warning("Execution aborted by user.")
             sys.exit(0)
 
     # 7. Execute updates (only if slot changes are needed)
@@ -125,18 +262,18 @@ def main():
     blogger_updates_made = 0
 
     if change_actions:
-        print("\n[Step 5] Fetching current Blog A slot posts contents...")
+        logger.step_header("5/7", "Fetching current the blog slot posts contents")
         try:
             # Fetch all posts in Blog A to avoid making multiple requests
             posts_resp = blogger_module.fetch_all_posts(blogger_session, BLOG_A_ID)
             posts_list = posts_resp.get("items", [])
             posts_map = {p["id"]: p for p in posts_list}
-            print(f"  - Cached {len(posts_map)} post structures from Blog A.")
+            logger.success(f"Cached {len(posts_map)} post structures from the blog.")
         except Exception as e:
-            print(f"  - Error pre-fetching Blogger posts: {e}")
+            logger.error(f"Error pre-fetching Blogger posts: {e}")
             sys.exit(1)
 
-        print("\n[Step 6] Applying slot and Blogger post changes...")
+        logger.step_header("6/7", "Applying slot and Blogger post changes")
         # Map scraped event by event_id for fast lookup
         scraped_map = {e["event_id"]: e for e in scraped_events}
 
@@ -161,7 +298,7 @@ def main():
             elif action_type in ["update_sheet_only"]:
                 event_name = f"{event['team1'].get('nameEn') or event['team1']['nameAr']} vs {event['team2'].get('nameEn') or event['team2']['nameAr']}"
                 slot["event_name"] = event_name
-                slot["kickoff_time"] = event["time"]
+                slot["kickoff_time"] = reconciler.format_to_user_style(event["time"])
                 slot["status"] = "active"
                 changed_slots.append(slot)
 
@@ -170,7 +307,7 @@ def main():
                 slot["event_id"] = event["event_id"]
                 slot["event_name"] = event_name
                 slot["iframe_url"] = event["iframe_url"]
-                slot["kickoff_time"] = event["time"]
+                slot["kickoff_time"] = reconciler.format_to_user_style(event["time"])
                 slot["status"] = "active"
                 changed_slots.append(slot)
 
@@ -181,12 +318,12 @@ def main():
                 post_data = posts_map.get(post_id)
                 if not post_data:
                     # Fallback to fetching it directly if not found in list
-                    print(f"    - Warning: Post ID {post_id} not found in pre-fetched list. Fetching directly...")
+                    logger.warning(f"Post ID {post_id} not found in pre-fetched list. Fetching directly...", indent=4)
                     try:
                         post_data = blogger_module.fetch_post(blogger_session, BLOG_A_ID, post_id)
                         posts_map[post_id] = post_data
                     except Exception as ex:
-                        print(f"    - Error fetching post {post_id}: {ex}")
+                        logger.error(f"Error fetching post {post_id}: {ex}", indent=4)
                         continue
 
                 current_content = post_data.get("content", "")
@@ -194,34 +331,42 @@ def main():
                 try:
                     patched_content = patcher.patch_slot_html(current_content, event["iframe_url"])
                     if args.dry_run:
-                        print(f"  [Dry Run] Would patch Blog A Post ID: {post_id} (Slot: {slot_name}) iframe to: {event['iframe_url']}")
+                        iframe_link = event['iframe_url']
+                        if len(iframe_link) > 60:
+                            iframe_link = iframe_link[:60] + "..."
+                        logger.info(f"[Dry Run Preview] Would patch the blog Post ID: {post_id} (Slot: {slot_name}) iframe to: {iframe_link}")
                     else:
-                        print(f"  Updating Blog A Post ID: {post_id} (Slot: {slot_name})...")
+                        logger.info(f"Updating the blog Post ID: {post_id} (Slot: {slot_name})...")
                         blogger_module.update_post(blogger_session, BLOG_A_ID, post_id, patched_content)
-                        print(f"    - Successfully patched post iframe URL to: {event['iframe_url']}")
+                        iframe_link = event['iframe_url']
+                        if len(iframe_link) > 60:
+                            iframe_link = iframe_link[:60] + "..."
+                        logger.success(f"Successfully patched post iframe URL to: {iframe_link}", indent=4)
                     # Update our cache with the patched content
                     post_data["content"] = patched_content
                     blogger_updates_made += 1
                 except Exception as ex:
-                    print(f"    - Error patching/updating post {post_id}: {ex}")
+                    logger.error(f"Error patching/updating post {post_id}: {ex}", indent=4)
                     continue
 
         # Write changes to Sheets
         if changed_slots:
+            print()
             if args.dry_run:
-                print(f"\n  [Dry Run] Would write {len(changed_slots)} updated slot states back to Google Sheets.")
+                logger.info(f"[Dry Run Preview] Would write {len(changed_slots)} updated slot states back to Google Sheets.")
             else:
-                print("\n  Writing updated slot states back to Google Sheets...")
+                logger.info("Writing updated slot states back to Google Sheets...")
                 try:
                     sheets_module.update_changed_slots(sheets_client, changed_slots, args.sheet)
-                    print("    - Sheets updated successfully.")
+                    logger.success("Sheets updated successfully.", indent=4)
                 except Exception as e:
-                    print(f"    - Error writing to Google Sheet: {e}")
+                    logger.error(f"Error writing to Google Sheet: {e}", indent=4)
     else:
-        print("\nSlot allocations and Blog A streams are already up to date. Skipping slot updates.")
+        print()
+        logger.success("Slot allocations and the blog streams are already up to date. Skipping slot updates.")
 
     # 8. Rebuild matches array for Blog B
-    print("\n[Step 7] Rebuilding Event List array for Blog B (Tivivi Goal)...")
+    logger.step_header("7/7", "Rebuilding Event List array for the data website (Tivivi Goal)")
     
     # We must fetch the latest slot rows from Sheets to construct the list (ensuring consistency)
     if args.dry_run:
@@ -230,7 +375,7 @@ def main():
         try:
             updated_slots = sheets_module.fetch_all_slots(sheets_client, args.sheet)
         except Exception as e:
-            print(f"  - Error fetching updated slot states: {e}")
+            logger.error(f"Error fetching updated slot states: {e}")
             sys.exit(1)
 
     # Re-fetch Blog A posts to ensure we have all URLs/permalinks
@@ -239,7 +384,7 @@ def main():
         posts_list = posts_resp.get("items", [])
         posts_map = {p["id"]: p for p in posts_list}
     except Exception as e:
-        print(f"  - Error updating Blog A posts cache: {e}")
+        logger.error(f"Error updating the blog posts cache: {e}")
         sys.exit(1)
 
     active_matches_list = []
@@ -277,6 +422,7 @@ def main():
             "time": ev["time"],
             "duration": ev.get("duration", 150),
             "link": permalink_url,
+            "ended": ev.get("status_class") in ["finished", "manually-finished"],
             "status_class": ev["status_class"] # temporary key
         }
         active_matches_list.append(match_obj)
@@ -289,33 +435,65 @@ def main():
         match["id"] = idx
         match.pop("status_class", None)
 
-    print(f"  - Active matches formatted for Blog B ({len(active_matches_list)} matches):")
+    logger.info(f"Active matches formatted for the data website ({len(active_matches_list)} matches):")
+    print()
+    
+    max_t1_len = max(len(m['team1'].get('nameEn') or m['team1']['nameAr']) for m in active_matches_list) if active_matches_list else 15
+    max_t2_len = max(len(m['team2'].get('nameEn') or m['team2']['nameAr']) for m in active_matches_list) if active_matches_list else 15
+    
     for m in active_matches_list:
         t1_en = m['team1'].get('nameEn') or m['team1']['nameAr']
         t2_en = m['team2'].get('nameEn') or m['team2']['nameAr']
-        print(f"    [{m['id']}] {t1_en} vs {t2_en} -> Link: {m['link']}")
+        aligned_teams = f"{t1_en:<{max_t1_len}} - {t2_en:<{max_t2_len}}"
+        link_str = m['link']
+        if len(link_str) > 60:
+            link_str = link_str[:60] + "..."
+        print(f"    [{m['id']:2d}] {aligned_teams} -> Link: {link_str}")
+        
+    print()
 
     # Patch Blog B Matches Page
-    print(f"\n  Fetching Blog B Matches Page ID {BLOG_B_PAGE_ID} from Blog {BLOG_B_ID}...")
+    logger.info(f"Fetching the data website Matches Page ID {BLOG_B_PAGE_ID} from Blog {BLOG_B_ID}...")
     try:
         page_data = blogger_module.fetch_page(blogger_session, BLOG_B_ID, BLOG_B_PAGE_ID)
         page_content = page_data.get("content", "")
         
         patched_page_content = patcher.patch_matches_page(page_content, active_matches_list)
         
-        if args.dry_run:
-            print("  [Dry Run] Would update Blog B Matches Page content on Blogger.")
+        if patched_page_content == page_content:
+            logger.success("Matches list page content is already up to date. Skipping Blogger update.")
         else:
-            print("  Updating Blog B Matches Page content...")
-            blogger_module.update_page(blogger_session, BLOG_B_ID, BLOG_B_PAGE_ID, patched_page_content)
-            print("  - Matches list page successfully updated.")
+            if args.dry_run:
+                logger.info("[Dry Run Preview] Would update the data website Matches Page content on Blogger (content changed).")
+            else:
+                logger.info("Updating the data website Matches Page content (content changed)...")
+                blogger_module.update_page(blogger_session, BLOG_B_ID, BLOG_B_PAGE_ID, patched_page_content)
+                logger.success("Matches list page successfully updated.")
     except Exception as e:
-        print(f"  - Error updating Blog B page: {e}")
+        logger.error(f"Error updating the data website page: {e}")
+        # Send error report if requested via Telegram
+        for cid in send_report_chat_ids:
+            send_telegram_message(TELEGRAM_BOT_TOKEN, cid, f"Pipeline Run Error: {e}")
         sys.exit(1)
 
-    print("\n==================================================")
-    print("Pipeline run completed successfully.")
-    print("==================================================")
+    if send_report_chat_ids:
+        reconciliation_report = []
+        for act in actions:
+            action_type = act["action_type"]
+            message = act["message"]
+            if action_type != "no_action":
+                clean_msg = message.replace(logger.COLOR_GREEN, "").replace(logger.COLOR_RED, "").replace(logger.COLOR_BLUE, "").replace(logger.COLOR_YELLOW, "").replace(logger.COLOR_RESET, "").replace(logger.COLOR_BOLD, "")
+                reconciliation_report.append(f"• {clean_msg}")
+                
+        if reconciliation_report:
+            report_text = "Pipeline Updates Applied:\n" + "\n".join(reconciliation_report)
+        else:
+            report_text = "Pipeline check completed. No slot changes needed (everything up to date)."
+            
+        for cid in send_report_chat_ids:
+            send_telegram_message(TELEGRAM_BOT_TOKEN, cid, report_text)
+
+    logger.step_header("DONE", "Pipeline run completed successfully")
 
 if __name__ == "__main__":
     main()
