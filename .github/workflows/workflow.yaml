@@ -28,6 +28,7 @@ jobs:
 
     - name: Run Stream Pipeline
       env:
+        PYTHONUNBUFFERED: "1"
         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         BLOGGER_REFRESH_TOKEN: ${{ secrets.BLOGGER_REFRESH_TOKEN }}
         BLOGGER_CLIENT_ID: ${{ secrets.BLOGGER_CLIENT_ID }}
