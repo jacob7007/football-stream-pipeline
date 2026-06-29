@@ -195,7 +195,7 @@ def main():
                 logger.error(f"Error saving matches cache: {e}")
 
     # Set up Telegram reporting if requested
-    TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8834247606:AAHKuuiL1TIjWo3nPJjMBfonSrm8hR_91NQ")
+    TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     send_report_chat_ids = [args.telegram_report_chat_id] if args.telegram_report_chat_id else []
 
     # 4. Reconcile states

@@ -16,7 +16,7 @@ HEADERS = {
     )
 }
 
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "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")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 SCRAPING_PROXY = os.environ.get("SCRAPING_PROXY")
