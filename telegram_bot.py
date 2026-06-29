@@ -27,7 +27,7 @@ def send_telegram_message(bot_token, chat_id, text):
 
 def main():
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "8834247606:AAHKuuiL1TIjWo3nPJjMBfonSrm8hR_91NQ")
-    allowed_chat_ids_raw = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "1324494633")
+    allowed_chat_ids_raw = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "1324494633,587683065")
     allowed_chat_ids = [x.strip() for x in allowed_chat_ids_raw.split(",") if x.strip()] if allowed_chat_ids_raw else []
 
     url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
