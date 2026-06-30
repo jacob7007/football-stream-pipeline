@@ -34,5 +34,8 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_ALLOWED_CHAT_IDS: ${{ secrets.TELEGRAM_ALLOWED_CHAT_IDS }}
         BLOG_PLAYER_ID: ${{ secrets.BLOG_PLAYER_ID }}
+        BLOG_DATA_ID: ${{ secrets.BLOG_DATA_ID }}
+        DATA_PAGE_ID: ${{ secrets.DATA_PAGE_ID }}
+        SCRAPER_HOMEPAGE_URL: ${{ secrets.SCRAPER_HOMEPAGE_URL }}
       run: |
         python telegram_bot.py
