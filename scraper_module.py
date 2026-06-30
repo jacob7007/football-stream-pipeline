@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import logger
 
-HOMEPAGE_URL = "https://kooracitty.com/"
+HOMEPAGE_URL = os.environ.get("SCRAPER_HOMEPAGE_URL", "")
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -292,7 +292,7 @@ def get_mock_matches() -> list:
             "iframe_url": "https://ex.roooom.online/?alba-player=home1",
             "link": "",
             "status_class": "live",
-            "match_url": "https://kooracitty.com/colombia-vs-portugal-mock-1/"
+            "match_url": urljoin(HOMEPAGE_URL or "https://example.com/", "colombia-vs-portugal-mock-1/")
         },
         {
             "event_id": "algeria-vs-austria-mock-2",
@@ -311,7 +311,7 @@ def get_mock_matches() -> list:
             "iframe_url": "https://ex.roooom.online/?alba-player=home2",
             "link": "",
             "status_class": "not-started",
-            "match_url": "https://kooracitty.com/algeria-vs-austria-mock-2/"
+            "match_url": urljoin(HOMEPAGE_URL or "https://example.com/", "algeria-vs-austria-mock-2/")
         },
         {
             "event_id": "south-africa-vs-canada-mock-3",
@@ -330,7 +330,7 @@ def get_mock_matches() -> list:
             "iframe_url": "",
             "link": "",
             "status_class": "finished",
-            "match_url": "https://kooracitty.com/south-africa-vs-canada-mock-3/"
+            "match_url": urljoin(HOMEPAGE_URL or "https://example.com/", "south-africa-vs-canada-mock-3/")
         }
     ]
     return mock_data
@@ -349,9 +349,13 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
         logger.info("Scraper: Using Mock Scraper Data.")
         return get_mock_matches(), [], {}
 
+    if not HOMEPAGE_URL:
+        logger.error("SCRAPER_HOMEPAGE_URL environment variable is not set. Cannot run competitor scraper.")
+        return [], [], {}
+
     pages = [
-        {"url": "https://kooracitty.com/matches-today-1/", "allowed_statuses": ["live", "not-started", "finished"]},
-        {"url": "https://kooracitty.com/matches-tomorrow/", "allowed_statuses": ["live", "not-started"]}
+        {"url": urljoin(HOMEPAGE_URL, "matches-today-1/"), "allowed_statuses": ["live", "not-started", "finished"]},
+        {"url": urljoin(HOMEPAGE_URL, "matches-tomorrow/"), "allowed_statuses": ["live", "not-started"]}
     ]
 
     matches_to_process = []

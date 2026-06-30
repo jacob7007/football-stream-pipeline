@@ -5,15 +5,33 @@ import subprocess
 from datetime import datetime
 import requests
 
+# Load local .env file if it exists
+def load_env():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        with open(env_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    key, val = line.split('=', 1)
+                    key = key.strip()
+                    val = val.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+
+load_env()
+
 # Import project modules from current directory
 import sheets_module
 import scraper_module
 import blogger_module
 import logger
 
-# Blogger Config
-BLOG_A_ID = "2885706943982996652"       # Tivivi Edu (Iframe Slots Blog)
-SPREADSHEET_NAME = "Matches - Slots state"
+# Blogger Config (Loaded from Environment Variables)
+BLOG_PLAYER_ID = os.environ.get("BLOG_PLAYER_ID")
+SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "Streaming Dashboard")
 
 def send_telegram_message(bot_token, chat_id, text):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -30,7 +48,10 @@ def main():
     if not bot_token:
         logger.error("TELEGRAM_BOT_TOKEN environment variable is not set.")
         sys.exit(1)
-    allowed_chat_ids_raw = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "1324494633,587683065")
+    if not BLOG_PLAYER_ID:
+        logger.error("BLOG_PLAYER_ID environment variable is not set.")
+        sys.exit(1)
+    allowed_chat_ids_raw = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS")
     allowed_chat_ids = [x.strip() for x in allowed_chat_ids_raw.split(",") if x.strip()] if allowed_chat_ids_raw else []
 
     url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
@@ -138,11 +159,11 @@ def main():
                 # Save cache immediately
                 sheets_module.save_matches_cache(sheets_client, matches_cache, SPREADSHEET_NAME)
                 
-                msg = f"Match '{match_name}' marked as ended. Triggering slot updates now..."
+                msg = f"Match '{match_name}' marked as ended. Triggering blog updates now..."
                 send_telegram_message(bot_token, chat_id, msg)
                 logger.success(f"Telegram Bot: Match '{match_name}' marked as finished in cache.")
                 
-                # Trigger run_pipeline.py immediately to free the slot and patch Blogger B
+                # Trigger run_pipeline.py immediately to free the blog and patch Blogger DATA
                 logger.info("Telegram Bot: Triggering pipeline update subprocess...")
                 subprocess.run([sys.executable, "run_pipeline.py", "--auto", "--telegram-report-chat-id", str(chat_id)])
             else:
@@ -154,7 +175,7 @@ def main():
             if blogger_session is None:
                 blogger_session = blogger_module.get_blogger_session()
                 
-            slots = sheets_module.fetch_all_slots(sheets_client, SPREADSHEET_NAME)
+            blogs = sheets_module.fetch_all_blogs(sheets_client, SPREADSHEET_NAME)
             team_translations = sheets_module.fetch_team_translations_separated(sheets_client, SPREADSHEET_NAME)
             matches_cache = sheets_module.fetch_matches_cache(sheets_client, SPREADSHEET_NAME)
             
@@ -165,9 +186,9 @@ def main():
                 matches_cache=matches_cache
             )
             
-            # Fetch Blog A slot permalinks
+            # Fetch Blog Player blog permalinks
             try:
-                posts_resp = blogger_module.fetch_all_posts(blogger_session, BLOG_A_ID)
+                posts_resp = blogger_module.fetch_all_posts(blogger_session, BLOG_PLAYER_ID)
                 posts_list = posts_resp.get("items", [])
                 posts_map = {p["id"]: p for p in posts_list}
             except Exception as e:
@@ -180,19 +201,19 @@ def main():
                 t2 = ev['team2'].get('nameEn') or ev['team2'].get('nameAr')
                 status = ev.get('status_class', 'unknown').upper()
                 
-                assigned_slot_label = ""
+                assigned_blog_label = ""
                 permalink = ""
-                for s in slots:
-                    if s.get("status", "").strip().lower() == "active" and s.get("event_id") == ev["event_id"]:
-                        assigned_slot_label = s.get("slot") or f"Row {s['row_num']}"
-                        post_info = posts_map.get(s["post_id"])
+                for b in blogs:
+                    if b.get("status", "").strip().lower() == "active" and b.get("event_id") == ev["event_id"]:
+                        assigned_blog_label = b.get("blog") or f"Row {b['row_num']}"
+                        post_info = posts_map.get(b["post_id"])
                         if post_info:
                             permalink = post_info.get("url", "")
                         break
                         
                 line = f"[{idx}] {t1} vs {t2} ({status})"
-                if assigned_slot_label:
-                    line += f"\n   Slot: {assigned_slot_label}"
+                if assigned_blog_label:
+                    line += f"\n   Blog: {assigned_blog_label}"
                     if permalink:
                         line += f"\n   Link: {permalink}"
                 else:

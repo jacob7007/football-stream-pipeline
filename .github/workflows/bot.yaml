@@ -33,5 +33,6 @@ jobs:
         SCRAPING_PROXY: ${{ secrets.SCRAPING_PROXY }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_ALLOWED_CHAT_IDS: ${{ secrets.TELEGRAM_ALLOWED_CHAT_IDS }}
+        BLOG_PLAYER_ID: ${{ secrets.BLOG_PLAYER_ID }}
       run: |
         python telegram_bot.py

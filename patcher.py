@@ -1,19 +1,19 @@
 import re
 import json
 
-def patch_slot_html(content: str, new_iframe_url: str) -> str:
+def patch_blog_html(content: str, new_iframe_url: str) -> str:
     """
-    Updates the iframe source within the SLOT_IFRAME_START and SLOT_IFRAME_END markers in Blog A's slot post.
+    Updates the iframe source within the BLOG_IFRAME_START and BLOG_IFRAME_END markers in Blog post.
     Supports flexible whitespace, newlines, and case-insensitivity.
     """
     pattern = re.compile(
-        r'(<!--\s*SLOT_IFRAME_START\s*-->).*?(<!--\s*SLOT_IFRAME_END\s*-->)',
+        r'(<!--\s*BLOG_IFRAME_START\s*-->).*?(<!--\s*BLOG_IFRAME_END\s*-->)',
         re.DOTALL | re.IGNORECASE
     )
     
     # Check if the markers exist in the page HTML
     if not pattern.search(content):
-        raise ValueError("Could not find <!--SLOT_IFRAME_START--> and <!--SLOT_IFRAME_END--> markers in post HTML.")
+        raise ValueError("Could not find <!--BLOG_IFRAME_START--> and <!--BLOG_IFRAME_END--> markers in post HTML.")
         
     replacement = (
         r'\1\n'
@@ -78,19 +78,19 @@ if __name__ == "__main__":
     # Test block
     print("Testing patcher.py functions...")
     
-    # Test slot patching
-    blog_a_html = """
+    # Test blog patching
+    blog_player_html = """
     <div>
        Some header content
-       <!--SLOT_IFRAME_START-->
+       <!--BLOG_IFRAME_START-->
        <iframe allowfullscreen="true" frameborder="0" height="500px" scrolling="1" src="#" width="100%"></iframe>
-       <!--SLOT_IFRAME_END-->
+       <!--BLOG_IFRAME_END-->
        Some footer content
     </div>
     """
-    patched_slot = patch_slot_html(blog_a_html, "https://ex.roooom.online/?alba-player=home1")
-    print("Patched Slot HTML:")
-    print(patched_slot)
+    patched_blog = patch_blog_html(blog_player_html, "https://ex.roooom.online/?alba-player=home1")
+    print("Patched Blog HTML:")
+    print(patched_blog)
     
     # Test page patching
     blog_b_html = """

@@ -13,7 +13,7 @@ SCOPES = [
 
 # Column layout in Google Sheet (exactly matches Plan.md order)
 COLUMNS = [
-    "slot",
+    "blog",
     "post_id",
     "event_id",
     "event_name",
@@ -68,9 +68,9 @@ def get_gspread_client() -> gspread.Client:
         "'service_account.json' or 'google_sheets_token.json' file in the workspace directory."
     )
 
-def fetch_all_slots(client: gspread.Client, spreadsheet_name: str = "Matches - Slots state") -> list:
+def fetch_all_blogs(client: gspread.Client, spreadsheet_name: str = "Streaming Dashboard") -> list:
     """
-    Fetches all slot rows from the first worksheet of the specified spreadsheet.
+    Fetches all blog rows from the first worksheet of the specified spreadsheet.
     Returns a list of dicts. Each dict contains the sheet values plus a 'row_num' key (1-indexed).
     """
     try:
@@ -104,7 +104,7 @@ def fetch_all_slots(client: gspread.Client, spreadsheet_name: str = "Matches - S
     headers = [h.strip() for h in all_values[0]]
     rows = all_values[1:]
     
-    slots = []
+    blogs = []
     for idx, row in enumerate(rows, start=2): # Data starts at row 2 (row 1 is header)
         # Pad row in case it has fewer columns than headers
         padded_row = row + [""] * (len(headers) - len(row))
@@ -118,17 +118,17 @@ def fetch_all_slots(client: gspread.Client, spreadsheet_name: str = "Matches - S
                 row_dict[norm_key] = padded_row[h_idx]
             else:
                 row_dict[header] = padded_row[h_idx]
-        slots.append(row_dict)
+        blogs.append(row_dict)
         
-    return slots
+    return blogs
 
-def update_changed_slots(client: gspread.Client, changed_slots: list, spreadsheet_name: str = "Matches - Slots state"):
+def update_changed_blogs(client: gspread.Client, changed_blogs: list, spreadsheet_name: str = "Streaming Dashboard"):
     """
     Updates the Google Sheet for rows that have changed.
-    `changed_slots` is a list of dictionaries that represent the slot states,
+    `changed_blogs` is a list of dictionaries that represent the blog states,
     which must contain the 'row_num' key.
     """
-    if not changed_slots:
+    if not changed_blogs:
         return
         
     sh = client.open(spreadsheet_name)
@@ -144,19 +144,19 @@ def update_changed_slots(client: gspread.Client, changed_slots: list, spreadshee
     # Perform batched or cell updates
     # Using batch_update is much more efficient than updating cells one by one
     body = []
-    for slot in changed_slots:
-        row_num = slot.get("row_num")
+    for blog in changed_blogs:
+        row_num = blog.get("row_num")
         if not row_num:
             continue
             
         # Update last_updated timestamp to current time in GMT+1
         from datetime import timezone, timedelta
         now_gmt1 = datetime.now(timezone.utc) + timedelta(hours=1)
-        slot["last_updated"] = f"{now_gmt1.day} {now_gmt1.strftime('%B')} - {now_gmt1.strftime('%H:%M')} (UTC+1)"
+        blog["last_updated"] = f"{now_gmt1.day} {now_gmt1.strftime('%B')} - {now_gmt1.strftime('%H:%M')} (UTC+1)"
         
         # Format the row list matching header positions
         row_data = [""] * len(headers)
-        for key, value in slot.items():
+        for key, value in blog.items():
             if key == "row_num":
                 continue
             key_norm = key.lower()
@@ -173,9 +173,9 @@ def update_changed_slots(client: gspread.Client, changed_slots: list, spreadshee
         
     if body:
         worksheet.batch_update(body)
-        logger.success(f"Sheets: Updated {len(body)} slot rows in Google Sheets.")
+        logger.success(f"Sheets: Updated {len(body)} blog rows in Google Sheets.")
 
-def fetch_team_translations_separated(client, spreadsheet_name: str = "Matches - Slots state") -> dict:
+def fetch_team_translations_separated(client, spreadsheet_name: str = "Streaming Dashboard") -> dict:
     """
     Fetches the team translations from '_cache_national_teams' and '_cache_clubs' worksheets.
     If either doesn't exist, creates it with columns:
@@ -226,7 +226,7 @@ def fetch_team_translations_separated(client, spreadsheet_name: str = "Matches -
 
     return translations
 
-def save_new_team_translations_separated(client, new_translations: list, spreadsheet_name: str = "Matches - Slots state"):
+def save_new_team_translations_separated(client, new_translations: list, spreadsheet_name: str = "Streaming Dashboard"):
     """
     Appends new translation rows to either '_cache_national_teams' or '_cache_clubs' worksheet.
     `new_translations` is a list of tuples/lists: [(arabic, english, code, logo_url, "national"|"club"), ...]
@@ -268,7 +268,7 @@ def save_new_team_translations_separated(client, new_translations: list, spreads
     append_to_sheet("_cache_national_teams", national_rows)
     append_to_sheet("_cache_clubs", club_rows)
 
-def fetch_matches_cache(client, spreadsheet_name: str = "Matches - Slots state") -> dict:
+def fetch_matches_cache(client, spreadsheet_name: str = "Streaming Dashboard") -> dict:
     """
     Fetches matches cache from '_cache_matches' worksheet.
     If it doesn't exist, creates it with columns:
@@ -332,7 +332,7 @@ def parse_user_styled_time(time_str: str) -> datetime:
         except Exception:
             return datetime.min
 
-def save_matches_cache(client, matches_cache: dict, spreadsheet_name: str = "Matches - Slots state"):
+def save_matches_cache(client, matches_cache: dict, spreadsheet_name: str = "Streaming Dashboard"):
     """
     Clears the '_cache_matches' worksheet and updates it with the current cache entries.
     Filters out any entries older than 2 days to keep the sheet compact.

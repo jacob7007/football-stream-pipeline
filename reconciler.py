@@ -39,9 +39,9 @@ def format_to_user_style(iso_time_str: str) -> str:
     except Exception:
         return iso_time_str
 
-def reconcile_state(sheet_slots: list, scraped_events: list) -> list:
+def reconcile_state(sheet_blogs: list, scraped_events: list) -> list:
     """
-    Compares the Google Sheet slot states with the scraped live events.
+    Compares the Google Sheet blog states with the scraped live events.
     Returns a list of action dicts describing what updates to make to the sheet and Blogger.
     """
     actions = []
@@ -49,151 +49,151 @@ def reconcile_state(sheet_slots: list, scraped_events: list) -> list:
     # Map scraped events by event_id for fast lookup
     scraped_map = {e["event_id"]: e for e in scraped_events}
     
-    active_matched = []  # slots currently holding a scraped event
-    to_be_freed = []     # slots holding an event that is no longer scraped
-    already_free = []    # slots that were already free
+    active_matched = []  # blogs currently holding a scraped event
+    to_be_freed = []     # blogs holding an event that is no longer scraped
+    already_free = []    # blogs that were already free
     
-    for slot in sheet_slots:
-        ev_id = slot.get("event_id", "").strip()
-        status = slot.get("status", "").strip().lower()
+    for blog in sheet_blogs:
+        ev_id = blog.get("event_id", "").strip()
+        status = blog.get("status", "").strip().lower()
         
         if status == "active" and ev_id:
             if ev_id in scraped_map:
-                active_matched.append(slot)
+                active_matched.append(blog)
             else:
-                to_be_freed.append(slot)
+                to_be_freed.append(blog)
         else:
-            already_free.append(slot)
+            already_free.append(blog)
             
     # Pools for allocation
-    # slots we can reuse/assign immediately: first already free, then slots whose matches disappeared
-    free_slots_queue = already_free + to_be_freed
+    # blogs we can reuse/assign immediately: first already free, then blogs whose matches disappeared
+    free_blogs_queue = already_free + to_be_freed
     
     # Track assignments made in this run
-    # Slot name -> Assigned Event dict
+    # Blog name -> Assigned Event dict
     assignments = {}
-    for slot in active_matched:
-        event = scraped_map[slot["event_id"]]
-        assignments[slot["slot"]] = {
-            "slot": slot,
+    for blog in active_matched:
+        event = scraped_map[blog["event_id"]]
+        assignments[blog["blog"]] = {
+            "blog": blog,
             "event": event,
             "source": "matched"
         }
         
     # Process scraped events that are not yet active
-    unassigned_events = [e for e in scraped_events if e["event_id"] not in [s["event_id"] for s in active_matched]]
+    unassigned_events = [e for e in scraped_events if e["event_id"] not in [b["event_id"] for b in active_matched]]
     
-    # Slots that were marked to_be_freed but got claimed/reassigned during this run
-    reassigned_slots = set()
+    # Blogs that were marked to_be_freed but got claimed/reassigned during this run
+    reassigned_blogs = set()
     
     for event in unassigned_events:
         t1_en = event['team1'].get('nameEn') or event['team1']['nameAr']
         t2_en = event['team2'].get('nameEn') or event['team2']['nameAr']
         event_name = f"{t1_en} vs {t2_en}"
         
-        if free_slots_queue:
-            # Assign to the first available free/freeable slot
-            slot = free_slots_queue.pop(0)
-            slot_label = slot['slot'] if slot.get('slot') else f"Row {slot['row_num']}"
+        if free_blogs_queue:
+            # Assign to the first available free/freeable blog
+            blog = free_blogs_queue.pop(0)
+            blog_label = blog['blog'] if blog.get('blog') else f"Row {blog['row_num']}"
             
-            if slot in to_be_freed:
-                reassigned_slots.add(slot["slot"])
+            if blog in to_be_freed:
+                reassigned_blogs.add(blog["blog"])
                 
-            assignments[slot["slot"]] = {
-                "slot": slot,
+            assignments[blog["blog"]] = {
+                "blog": blog,
                 "event": event,
                 "source": "assign"
             }
             
             actions.append({
                 "action_type": "assign_new",
-                "slot": slot,
+                "blog": blog,
                 "event": event,
-                "message": f"Assign new event '{event_name}' to slot {slot_label}"
+                "message": f"Assign new event '{event_name}' to blog {blog_label}"
             })
         else:
-            # All slots are fully active (no free slots, and no slots to free). We must evict one.
+            # All blogs are fully active (no free blogs, and no blogs to free). We must evict one.
             active_candidates = list(assignments.values())
             
             if not active_candidates:
-                print(f"Error: No slots available for eviction to fit event '{event_name}'.", file=sys.stderr)
+                print(f"Error: No blogs available for eviction to fit event '{event_name}'.", file=sys.stderr)
                 continue
                 
             # Find candidate with earliest kickoff time
             active_candidates.sort(key=lambda item: parse_iso_time(item["event"]["time"]))
             evict_item = active_candidates[0]
-            evict_slot = evict_item["slot"]
+            evict_blog = evict_item["blog"]
             evict_event = evict_item["event"]
             evict_t1_en = evict_event['team1'].get('nameEn') or evict_event['team1']['nameAr']
             evict_t2_en = evict_event['team2'].get('nameEn') or evict_event['team2']['nameAr']
             evict_event_name = f"{evict_t1_en} vs {evict_t2_en}"
             
-            evict_slot_label = evict_slot['slot'] if evict_slot.get('slot') else f"Row {evict_slot['row_num']}"
+            evict_blog_label = evict_blog['blog'] if evict_blog.get('blog') else f"Row {evict_blog['row_num']}"
             
-            # Reassign this slot to the new event
-            assignments[evict_slot["slot"]] = {
-                "slot": evict_slot,
+            # Reassign this blog to the new event
+            assignments[evict_blog["blog"]] = {
+                "blog": evict_blog,
                 "event": event,
                 "source": "evict"
             }
             
             actions.append({
                 "action_type": "evict_and_assign",
-                "slot": evict_slot,
+                "blog": evict_blog,
                 "event": event,
-                "message": f"WARNING: All slots full. Evicting slot {evict_slot_label} (was: '{evict_event_name}', kickoff: {evict_event['time']}) for new event '{event_name}'"
+                "message": f"WARNING: All blogs full. Evicting blog {evict_blog_label} (was: '{evict_event_name}', kickoff: {evict_event['time']}) for new event '{event_name}'"
             })
             
-    # For any slots in to_be_freed that did NOT get reassigned to a new event:
-    for slot in to_be_freed:
-        if slot["slot"] not in reassigned_slots:
-            slot_label = slot['slot'] if slot.get('slot') else f"Row {slot['row_num']}"
+    # For any blogs in to_be_freed that did NOT get reassigned to a new event:
+    for blog in to_be_freed:
+        if blog["blog"] not in reassigned_blogs:
+            blog_label = blog['blog'] if blog.get('blog') else f"Row {blog['row_num']}"
             actions.append({
-                "action_type": "free_slot",
-                "slot": slot,
+                "action_type": "free_blog",
+                "blog": blog,
                 "event": None,
-                "message": f"Freeing slot {slot_label} (event '{slot.get('event_name')}' disappeared from scrape)"
+                "message": f"Freeing blog {blog_label} (event '{blog.get('event_name')}' disappeared from scrape)"
             })
             
-    # For the matched active slots, check if they need an update or are up-to-date
-    for slot in active_matched:
-        if assignments[slot["slot"]]["source"] == "evict":
+    # For the matched active blogs, check if they need an update or are up-to-date
+    for blog in active_matched:
+        if assignments[blog["blog"]]["source"] == "evict":
             continue
             
-        event = scraped_map[slot["event_id"]]
+        event = scraped_map[blog["event_id"]]
         t1_en = event['team1'].get('nameEn') or event['team1']['nameAr']
         t2_en = event['team2'].get('nameEn') or event['team2']['nameAr']
         event_name = f"{t1_en} vs {t2_en}"
         
-        slot_label = slot['slot'] if slot.get('slot') else f"Row {slot['row_num']}"
-        sheet_iframe = slot.get("iframe_url", "").strip()
+        blog_label = blog['blog'] if blog.get('blog') else f"Row {blog['row_num']}"
+        sheet_iframe = blog.get("iframe_url", "").strip()
         scraped_iframe = event["iframe_url"].strip()
         
         if sheet_iframe != scraped_iframe:
             actions.append({
                 "action_type": "update_iframe",
-                "slot": slot,
+                "blog": blog,
                 "event": event,
-                "message": f"Update iframe for slot {slot_label} (event: '{event_name}')"
+                "message": f"Update iframe for blog {blog_label} (event: '{event_name}')"
             })
         else:
-            sheet_name = slot.get("event_name", "").strip()
-            sheet_kickoff = slot.get("kickoff_time", "").strip()
+            sheet_name = blog.get("event_name", "").strip()
+            sheet_kickoff = blog.get("kickoff_time", "").strip()
             
             expected_kickoff = format_to_user_style(event["time"])
             if sheet_name != event_name or sheet_kickoff != expected_kickoff:
                 actions.append({
                     "action_type": "update_sheet_only",
-                    "slot": slot,
+                    "blog": blog,
                     "event": event,
-                    "message": f"Update sheet metadata only for slot {slot_label} (event: '{event_name}')"
+                    "message": f"Update sheet metadata only for blog {blog_label} (event: '{event_name}')"
                 })
             else:
                 actions.append({
                     "action_type": "no_action",
-                    "slot": slot,
+                    "blog": blog,
                     "event": event,
-                    "message": f"Slot {slot_label} is up to date for event '{event_name}'"
+                    "message": f"Blog {blog_label} is up to date for event '{event_name}'"
                 })
                 
     return actions
@@ -202,9 +202,9 @@ if __name__ == "__main__":
     # Test block
     print("Testing refined reconciler state logic...")
     sheet_data = [
-        {"slot": "Slot 1", "post_id": "101", "event_id": "teamA-vs-teamB", "event_name": "Team A vs Team B", "iframe_url": "url1", "status": "active", "kickoff_time": "2026-06-28T10:00:00+01:00", "row_num": 2},
-        {"slot": "Slot 2", "post_id": "102", "event_id": "", "event_name": "", "iframe_url": "", "status": "free", "kickoff_time": "", "row_num": 3},
-        {"slot": "Slot 3", "post_id": "103", "event_id": "teamC-vs-teamD", "event_name": "Team C vs Team D", "iframe_url": "url3", "status": "active", "kickoff_time": "2026-06-28T14:00:00+01:00", "row_num": 4},
+        {"blog": "Blog 1", "post_id": "101", "event_id": "teamA-vs-teamB", "event_name": "Team A vs Team B", "iframe_url": "url1", "status": "active", "kickoff_time": "2026-06-28T10:00:00+01:00", "row_num": 2},
+        {"blog": "Blog 2", "post_id": "102", "event_id": "", "event_name": "", "iframe_url": "", "status": "free", "kickoff_time": "", "row_num": 3},
+        {"blog": "Blog 3", "post_id": "103", "event_id": "teamC-vs-teamD", "event_name": "Team C vs Team D", "iframe_url": "url3", "status": "active", "kickoff_time": "2026-06-28T14:00:00+01:00", "row_num": 4},
     ]
     
     scraped = [
