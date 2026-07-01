@@ -8,7 +8,20 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import logger
 
-HOMEPAGE_URL = os.environ.get("SCRAPER_HOMEPAGE_URL", "")
+SCRAPER_URLS_ENV = os.environ.get("SCRAPER_URLS", "").strip()
+SCRAPER_URLS = []
+if SCRAPER_URLS_ENV:
+    if SCRAPER_URLS_ENV.startswith("[") and SCRAPER_URLS_ENV.endswith("]"):
+        try:
+            parsed = json.loads(SCRAPER_URLS_ENV)
+            if isinstance(parsed, list):
+                SCRAPER_URLS = [url.strip() for url in parsed if isinstance(url, str) and url.strip()]
+        except Exception:
+            pass
+    if not SCRAPER_URLS:
+        SCRAPER_URLS = [url.strip() for url in SCRAPER_URLS_ENV.split(",") if url.strip()]
+
+# Headers for requests
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -288,11 +301,11 @@ def get_mock_matches() -> list:
                 "img": "https://flagcdn.com/pt.svg"
             },
             "time": t1,
-            "duration": 150,
+            "duration": 180,
             "iframe_url": "https://ex.roooom.online/?alba-player=home1",
             "link": "",
             "status_class": "live",
-            "match_url": urljoin(HOMEPAGE_URL or "https://example.com/", "colombia-vs-portugal-mock-1/")
+            "match_url": urljoin(SCRAPER_URLS[0] if SCRAPER_URLS else "https://example.com/", "colombia-vs-portugal-mock-1/")
         },
         {
             "event_id": "algeria-vs-austria-mock-2",
@@ -307,11 +320,11 @@ def get_mock_matches() -> list:
                 "img": "https://flagcdn.com/at.svg"
             },
             "time": t2,
-            "duration": 150,
+            "duration": 180,
             "iframe_url": "https://ex.roooom.online/?alba-player=home2",
             "link": "",
             "status_class": "not-started",
-            "match_url": urljoin(HOMEPAGE_URL or "https://example.com/", "algeria-vs-austria-mock-2/")
+            "match_url": urljoin(SCRAPER_URLS[0] if SCRAPER_URLS else "https://example.com/", "algeria-vs-austria-mock-2/")
         },
         {
             "event_id": "south-africa-vs-canada-mock-3",
@@ -326,14 +339,21 @@ def get_mock_matches() -> list:
                 "img": "https://flagcdn.com/ca.svg"
             },
             "time": t3,
-            "duration": 150,
+            "duration": 180,
             "iframe_url": "",
             "link": "",
             "status_class": "finished",
-            "match_url": urljoin(HOMEPAGE_URL or "https://example.com/", "south-africa-vs-canada-mock-3/")
+            "match_url": urljoin(SCRAPER_URLS[0] if SCRAPER_URLS else "https://example.com/", "south-africa-vs-canada-mock-3/")
         }
     ]
     return mock_data
+
+def get_status_priority(status: str) -> int:
+    if status == "live":
+        return 2
+    if status == "not-started":
+        return 1
+    return 0
 
 def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, matches_cache: dict = None) -> tuple:
     """
@@ -349,22 +369,24 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
         logger.info("Scraper: Using Mock Scraper Data.")
         return get_mock_matches(), [], {}
 
-    if not HOMEPAGE_URL:
-        logger.error("SCRAPER_HOMEPAGE_URL environment variable is not set. Cannot run competitor scraper.")
+    if not SCRAPER_URLS:
+        logger.error("SCRAPER_URLS environment variable is not set. Cannot run competitor scraper.")
         return [], [], {}
 
-    pages = [
-        {"url": urljoin(HOMEPAGE_URL, "matches-today-1/"), "allowed_statuses": ["live", "not-started", "finished"]},
-        {"url": urljoin(HOMEPAGE_URL, "matches-tomorrow/"), "allowed_statuses": ["live", "not-started"]}
-    ]
+    urls_to_scrape = SCRAPER_URLS
 
     matches_to_process = []
     unique_team_names = set()
     seen_links = set()
 
-    for page in pages:
-        url = page["url"]
-        allowed = page["allowed_statuses"]
+    for url in urls_to_scrape:
+        # Determine default date based on URL (today vs tomorrow)
+        is_tomorrow_page = "tomorrow" in url.lower()
+        if is_tomorrow_page:
+            default_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+        else:
+            default_date = datetime.today().strftime('%Y-%m-%d')
+
         logger.info(f"Scraper: Fetching matches page from {url}...")
         try:
             resp = requests.get(url, headers=HEADERS, timeout=20, proxies=get_request_proxies())
@@ -374,20 +396,30 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
             continue
 
         soup = BeautifulSoup(resp.text, 'html.parser')
-        match_elements = soup.select('.AY_Match')
+        match_elements = soup.select('.AY_Match, .match-container')
         # Filter out "No matches today" placeholders
         real_matches = [m for m in match_elements if not m.select_one('.no-data__msg')]
-        logger.info(f"Scraper: Found {len(real_matches)} matches on {url.split('/')[-2]} page.")
+        page_name = url.rstrip("/").split("/")[-1]
+        logger.info(f"Scraper: Found {len(real_matches)} matches on {page_name} page.")
 
         for match in real_matches:
             classes = match.get('class', [])
+            is_variant_2 = 'match-container' in classes
             
             # Identify match status
             status_class = None
-            for cls in allowed:
-                if cls in classes:
-                    status_class = cls
-                    break
+            if is_variant_2:
+                if 'live' in classes or 'live2' in classes:
+                    status_class = 'live'
+                elif 'end' in classes or 'finished' in classes:
+                    status_class = 'finished'
+                elif 'comming-soon' in classes or 'not-started' in classes or 'not-start' in classes:
+                    status_class = 'not-started'
+            else:
+                for cls in ["live", "not-started", "finished"]:
+                    if cls in classes:
+                        status_class = cls
+                        break
             
             if not status_class:
                 continue
@@ -396,26 +428,34 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
             if not link_elem:
                 continue
                 
-            match_url = urljoin(HOMEPAGE_URL, link_elem['href'])
+            match_url = urljoin(url, link_elem['href'])
             if match_url in seen_links:
                 continue
             seen_links.add(match_url)
 
-            team1_elem = match.select_one('.TM1 .TM_Name')
-            team2_elem = match.select_one('.TM2 .TM_Name')
+            if is_variant_2:
+                team1_elem = match.select_one('.right-team .team-name')
+                team2_elem = match.select_one('.left-team .team-name')
+                t1_img_elem = match.select_one('.right-team .team-logo img')
+                t2_img_elem = match.select_one('.left-team .team-logo img')
+                time_elem = match.select_one('.match-time')
+            else:
+                team1_elem = match.select_one('.TM1 .TM_Name')
+                team2_elem = match.select_one('.TM2 .TM_Name')
+                t1_img_elem = match.select_one('.TM1 .TM_Logo img')
+                t2_img_elem = match.select_one('.TM2 .TM_Logo img')
+                time_elem = match.select_one('.MT_Time')
+
             team1_name = team1_elem.get_text(strip=True) if team1_elem else "Unknown Team 1"
             team2_name = team2_elem.get_text(strip=True) if team2_elem else "Unknown Team 2"
 
-            t1_img_elem = match.select_one('.TM1 .TM_Logo img')
-            t2_img_elem = match.select_one('.TM2 .TM_Logo img')
             t1_orig_img = t1_img_elem.get('data-src') or t1_img_elem.get('src') if t1_img_elem else ""
             t2_orig_img = t2_img_elem.get('data-src') or t2_img_elem.get('src') if t2_img_elem else ""
 
             title_str = link_elem.get('title', '')
             date_match = re.search(r'\d{4}-\d{2}-\d{2}', title_str)
-            date_str = date_match.group(0) if date_match else datetime.today().strftime('%Y-%m-%d')
+            date_str = date_match.group(0) if date_match else default_date
 
-            time_elem = match.select_one('.MT_Time')
             time_str = time_elem.get_text(strip=True) if time_elem else "12:00 AM"
 
             unique_team_names.add(team1_name)
@@ -477,28 +517,73 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
 
     logger.success("Scraper: Translation completed. Resolving match detail iframes.")
 
+    # Group matches by event_id first
+    events_grouped = {}
+    for match_data in matches_to_process:
+        t1_name = match_data["team1_name"]
+        t2_name = match_data["team2_name"]
+        
+        t1_info = team_translations.get(t1_name) or get_local_fallback_mapping(t1_name)
+        t2_info = team_translations.get(t2_name) or get_local_fallback_mapping(t2_name)
+        
+        t1_code = t1_info.get("code", "club")
+        t2_code = t2_info.get("code", "club")
+        formatted_time = parse_match_time(match_data["date_str"], match_data["time_str"])
+        event_id = generate_stable_event_id(t1_code, t2_code, formatted_time)
+        
+        match_data["event_id"] = event_id
+        match_data["formatted_time"] = formatted_time
+        match_data["t1_info"] = t1_info
+        match_data["t2_info"] = t2_info
+        
+        events_grouped.setdefault(event_id, []).append(match_data)
+
+    # Log overlaps and unique matches
+    print()
+    logger.info("Scraper: Analyzing multi-source match details...")
+    for event_id, candidates in events_grouped.items():
+        t1_name = candidates[0]["t1_info"].get("nameEn") or candidates[0]["team1_name"]
+        t2_name = candidates[0]["t2_info"].get("nameEn") or candidates[0]["team2_name"]
+        event_name = f"{t1_name} vs {t2_name}"
+        
+        urls = [c["match_url"] for c in candidates]
+        if len(candidates) > 1:
+            domains = [url.split("//")[-1].split("/")[0] for url in urls]
+            logger.info(f"Overlap: '{event_name}' found on {len(candidates)} pages: {', '.join(domains)}")
+        else:
+            domain = urls[0].split("//")[-1].split("/")[0]
+            logger.info(f"Unique: '{event_name}' only found on: {domain}")
+    print()
+
     parsed_matches = []
     updated_matches_cache = {}
     now_dt = datetime.now()
 
-
-
     has_logged_fetching = False
-    for idx, match_data in enumerate(matches_to_process, 1):
-        t1_name = match_data["team1_name"]
-        t2_name = match_data["team2_name"]
+    for event_id, candidates in events_grouped.items():
+        # Determine overall status_class (prioritize live > not-started > finished)
+        overall_status_class = "finished"
+        best_priority = -1
+        for cand in candidates:
+            cached_match = matches_cache.get(cand["match_url"])
+            status = cand["status_class"]
+            if cached_match and cached_match.get("status_class") in ["finished", "manually-finished"]:
+                status = "finished"
+            
+            priority = get_status_priority(status)
+            if priority > best_priority:
+                best_priority = priority
+                overall_status_class = status
 
-        # Resolve translation & flag/logo mapping
-        t1_info = team_translations.get(t1_name) or get_local_fallback_mapping(t1_name)
-        t2_info = team_translations.get(t2_name) or get_local_fallback_mapping(t2_name)
+        first_cand = candidates[0]
+        t1_name = first_cand["team1_name"]
+        t2_name = first_cand["team2_name"]
+        t1_info = first_cand["t1_info"]
+        t2_info = first_cand["t2_info"]
+        team1_img = t1_info.get("logo_url") or first_cand["team1_orig_img"]
+        team2_img = t2_info.get("logo_url") or first_cand["team2_orig_img"]
+        formatted_time = first_cand["formatted_time"]
 
-        t1_code = t1_info.get("code", "club")
-        t2_code = t2_info.get("code", "club")
-        team1_img = t1_info.get("logo_url") or match_data["team1_orig_img"]
-        team2_img = t2_info.get("logo_url") or match_data["team2_orig_img"]
-
-        formatted_time = parse_match_time(match_data["date_str"], match_data["time_str"])
-        
         # Parse kickoff time to check if kickoff is far in the future
         kickoff_dt = datetime.min
         try:
@@ -507,55 +592,79 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
         except Exception:
             pass
 
-        # Check matches cache
-        cached_match = matches_cache.get(match_data["match_url"])
-        
-        status_class = match_data["status_class"]
-        if cached_match and cached_match.get("status_class") in ["finished", "manually-finished"]:
-            status_class = "finished"
-
-        is_finished = (status_class == "finished")
-        is_live = (status_class == "live")
+        is_finished = (overall_status_class == "finished")
+        is_live = (overall_status_class == "live")
         
         is_far_future = False
-        if status_class == "not-started" and kickoff_dt != datetime.min:
+        if overall_status_class == "not-started" and kickoff_dt != datetime.min:
             time_until_kickoff = (kickoff_dt - now_dt).total_seconds()
-            if time_until_kickoff > 20 * 60: # > 20 minutes away
+            if time_until_kickoff > 3 * 60 * 60: # > 3 hours away
                 is_far_future = True
 
         iframe_url = ""
-        should_scrape = True
+        resolved_match_url = first_cand["match_url"]
 
         if is_finished:
-            should_scrape = False
             iframe_url = ""
-        elif is_far_future:
-            should_scrape = False
-            iframe_url = cached_match.get("iframe_url", "") if cached_match else ""
-        elif is_live:
-            # Always scrape live matches to keep stream link fresh
-            should_scrape = True
+            for cand in candidates:
+                updated_matches_cache[cand["match_url"]] = {
+                    "iframe_url": "",
+                    "status_class": "finished",
+                    "last_updated": now_dt.isoformat()
+                }
         else:
-            # Near kickoff (<= 20 mins)
-            if cached_match and cached_match.get("iframe_url"):
-                should_scrape = False
-                iframe_url = cached_match["iframe_url"]
+            # Fallback chain across candidates
+            for cand in candidates:
+                cand_url = cand["match_url"]
+                cached_match = matches_cache.get(cand_url)
+                
+                cand_status = cand["status_class"]
+                if cached_match and cached_match.get("status_class") in ["finished", "manually-finished"]:
+                    cand_status = "finished"
 
-        if should_scrape:
-            if not has_logged_fetching:
-                print()
-                logger.info("Scraper: Fetching stream iframe.")
-                has_logged_fetching = True
-            iframe_url = extract_stream_iframe(match_data["match_url"]) or ""
+                use_cache = False
+                if is_far_future:
+                    use_cache = True
+                elif cand_status == "not-started":
+                    if cached_match and cached_match.get("iframe_url"):
+                        use_cache = True
+                
+                cand_iframe = ""
+                if use_cache:
+                    cand_iframe = cached_match.get("iframe_url", "") if cached_match else ""
+                else:
+                    if not has_logged_fetching:
+                        print()
+                        logger.info("Scraper: Fetching stream iframe.")
+                        has_logged_fetching = True
+                    logger.info(f"Scraper: Fetching iframe for {event_id} from {cand_url}...")
+                    cand_iframe = extract_stream_iframe(cand_url) or ""
 
-        # Update cache
-        updated_matches_cache[match_data["match_url"]] = {
-            "iframe_url": iframe_url,
-            "status_class": status_class,
-            "last_updated": now_dt.isoformat()
-        }
-
-        event_id = generate_stable_event_id(t1_code, t2_code, formatted_time)
+                if cand_iframe:
+                    iframe_url = cand_iframe
+                    resolved_match_url = cand_url
+                    updated_matches_cache[cand_url] = {
+                        "iframe_url": iframe_url,
+                        "status_class": overall_status_class,
+                        "last_updated": now_dt.isoformat()
+                    }
+                    break
+                else:
+                    updated_matches_cache[cand_url] = {
+                        "iframe_url": "",
+                        "status_class": overall_status_class,
+                        "last_updated": now_dt.isoformat()
+                    }
+            
+            # Fill skipped candidates with current resolved state
+            for cand in candidates:
+                cand_url = cand["match_url"]
+                if cand_url not in updated_matches_cache:
+                    updated_matches_cache[cand_url] = {
+                        "iframe_url": iframe_url if resolved_match_url == cand_url else "",
+                        "status_class": overall_status_class,
+                        "last_updated": now_dt.isoformat()
+                    }
 
         parsed_matches.append({
             "event_id": event_id,
@@ -570,11 +679,11 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
                 "img": team2_img
             },
             "time": formatted_time,
-            "duration": 150,
+            "duration": 180,
             "iframe_url": iframe_url,
             "link": "",
-            "status_class": status_class,
-            "match_url": match_data["match_url"]
+            "status_class": overall_status_class,
+            "match_url": resolved_match_url
         })
 
     return parsed_matches, new_translations_list, updated_matches_cache

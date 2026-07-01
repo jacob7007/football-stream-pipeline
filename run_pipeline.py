@@ -442,7 +442,7 @@ def main():
             "team1": ev["team1"],
             "team2": ev["team2"],
             "time": ev["time"],
-            "duration": ev.get("duration", 150),
+            "duration": ev.get("duration", 180),
             "link": permalink_url,
             "ended": ev.get("status_class") in ["finished", "manually-finished"],
             "status_class": ev["status_class"] # temporary key
