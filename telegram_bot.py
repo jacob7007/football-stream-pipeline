@@ -97,7 +97,7 @@ def main():
             
             # Scrape matches to find the target URL and event details
             logger.info("Telegram Bot: Scraping live matches to find target event...")
-            scraped_events, _, _ = scraper_module.scrape_live_matches(
+            scraped_events, _, _, _ = scraper_module.scrape_live_matches(
                 use_mock=False,
                 team_translations=team_translations,
                 matches_cache=matches_cache
@@ -156,7 +156,7 @@ def main():
             matches_cache = sheets_module.fetch_matches_cache(sheets_client, SPREADSHEET_NAME)
             
             logger.info("Telegram Bot: Fetching scraped matches...")
-            scraped_events, _, _ = scraper_module.scrape_live_matches(
+            scraped_events, _, _, _ = scraper_module.scrape_live_matches(
                 use_mock=False,
                 team_translations=team_translations,
                 matches_cache=matches_cache
