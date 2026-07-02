@@ -3,10 +3,12 @@ import json
 import re
 import sys
 from datetime import datetime, timedelta
+from utils import format_to_human_time, get_now_gmt1, get_now_gmt3
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import logger
+from translation_manager import normalize_arabic, find_existing_translation
 
 SCRAPER_URLS_ENV = os.environ.get("SCRAPER_URLS", "").strip()
 SCRAPER_URLS = []
@@ -75,107 +77,7 @@ def generate_stable_event_id(t1_code: str, t2_code: str, kickoff_iso: str) -> st
         
     return f"{c1}-vs-{c2}-{date_part}"
 
-def normalize_arabic(text: str) -> str:
-    """
-    Normalizes Arabic text spelling variations for fallback mapping.
-    """
-    if not text:
-        return ""
-    text = text.lower().strip()
-    text = text.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
-    text = text.replace("ة", "ه")
-    words = text.split()
-    cleaned_words = []
-    for w in words:
-        if w.startswith("ال") and len(w) > 2:
-            cleaned_words.append(w[2:])
-        else:
-            cleaned_words.append(w)
-    return " ".join(cleaned_words)
 
-def get_local_fallback_mapping(team_name: str) -> dict:
-    """
-    Fallback team mappings when OpenRouter/LLM is unavailable.
-    """
-    norm = normalize_arabic(team_name)
-    country_mappings = {
-        "كونغو": "cd",
-        "كونقو": "cd",
-        "كولومب": "co",
-        "كولمب": "co",
-        "برتغال": "pt",
-        "جزائر": "dz",
-        "نمسا": "at",
-        "اردن": "jo",
-        "ارجنتين": "ar",
-        "جنوب افريق": "za",
-        "كندا": "ca",
-        "كروات": "hr",
-        "غانا": "gh",
-        "بنما": "pa",
-        "انجلتر": "gb",
-        "انكلتر": "gb",
-        "مغرب": "ma",
-        "مصر": "eg",
-        "سعود": "sa",
-        "تونس": "tn",
-        "عراق": "iq",
-        "فرنسا": "fr",
-        "اسبان": "es",
-        "ايطال": "it",
-        "المان": "de",
-        "برازيل": "br",
-        "بلجيك": "be",
-        "هولند": "nl",
-        "اوروغو": "uy",
-        "سنغال": "sn",
-        "كاميرون": "cm",
-        "يابان": "jp",
-        "كوريا": "kr",
-        "استرال": "au",
-        "امريك": "us",
-        "ولايات متحد": "us",
-        "مكسيك": "mx",
-        "سويسر": "ch",
-        "دنمارك": "dk",
-        "سويد": "se",
-        "نرويج": "no",
-        "بولند": "pl",
-        "ترك": "tr",
-        "روس": "ru",
-        "اوكران": "ua",
-    }
-    
-    code = "club"
-    for key, c_code in country_mappings.items():
-        if key in norm:
-            code = c_code
-            break
-            
-    # Derive English name dynamically if not in dictionary
-    return {
-        "nameEn": team_name, # fallback to Arabic if no translation
-        "code": code
-    }
-
-def get_mapping_normalized(llm_mappings: dict, team_name: str) -> dict:
-    """
-    Looks up a team name in the llm_mappings dictionary using normalized Arabic keys.
-    Handles minor hamza/spelling variations between input name and LLM key.
-    """
-    if not llm_mappings:
-        return None
-    # 1. Direct match
-    if team_name in llm_mappings:
-        return llm_mappings[team_name]
-        
-    # 2. Normalized match
-    norm_target = normalize_arabic(team_name)
-    for k, v in llm_mappings.items():
-        if normalize_arabic(k) == norm_target:
-            return v
-            
-    return None
 
 def fetch_openrouter_mappings(unique_names: list) -> dict:
     """
@@ -190,6 +92,7 @@ def fetch_openrouter_mappings(unique_names: list) -> dict:
         '1. "nameEn": The standard English name of the team/club (e.g. "Colombia", "Portugal", "Real Madrid", "Al Ahly", "Barcelona").\n'
         '2. "code":\n'
         '   - If it is a national team, output the 2-letter lowercase ISO country code (e.g. "co" for Colombia, "pt" for Portugal, "ma" for Morocco).\n'
+        '     Note: For UK constituent countries, use their specific flagcdn/subdivision codes: "gb-eng" for England, "gb-sct" for Scotland, "gb-wls" for Wales, and "gb-nir" for Northern Ireland.\n'
         '   - If it is a club team/club, output a standard 3-letter or 3-4 letter uppercase abbreviation/code for the club (e.g. "RMA" for Real Madrid, "FCB" for Barcelona, "WAC" for Wydad AC, "MUN" for Manchester United, "AHL" for Al Ahly).\n\n'
         "Respond ONLY with a JSON object where the keys are the input Arabic team names, and the values are the objects with 'nameEn' and 'code'. "
         "Do not write any markdown code block wrappers (like ```json), write only the raw JSON text."
@@ -355,10 +258,12 @@ def get_status_priority(status: str) -> int:
         return 1
     return 0
 
+
+
 def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, matches_cache: dict = None) -> tuple:
     """
     Main function to scrape matches. Can be toggled to mock mode.
-    Returns (parsed_matches, new_translations_list, updated_matches_cache).
+    Returns (parsed_matches, new_translations_list, updated_matches_cache, alias_updates).
     """
     if team_translations is None:
         team_translations = {}
@@ -379,28 +284,44 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
     unique_team_names = set()
     seen_links = set()
 
+    # Pre-calculate clean URLs to align them using .ljust
+    url_info_list = []
+    max_url_len = 0
     for url in urls_to_scrape:
-        # Determine default date based on URL (today vs tomorrow)
+        clean_url = url.split("://")[-1].rstrip("/")
+        if len(clean_url) > max_url_len:
+            max_url_len = len(clean_url)
+        url_info_list.append((url, clean_url))
+
+    for url, clean_url in url_info_list:
+        # Determine default date based on URL (today vs tomorrow) relative to KSA time (GMT+3)
+        # since competitor websites operate in KSA timezone.
+        ksa_now = get_now_gmt3()
         is_tomorrow_page = "tomorrow" in url.lower()
         if is_tomorrow_page:
-            default_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+            default_date = (ksa_now + timedelta(days=1)).strftime('%Y-%m-%d')
         else:
-            default_date = datetime.today().strftime('%Y-%m-%d')
+            default_date = ksa_now.strftime('%Y-%m-%d')
 
-        logger.info(f"Scraper: Fetching matches page from {url}...")
         try:
             resp = requests.get(url, headers=HEADERS, timeout=20, proxies=get_request_proxies())
             resp.raise_for_status()
         except Exception as e:
-            logger.error(f"Scraper: Failed to fetch page {url}: {e}")
+            padded_url = clean_url.ljust(max_url_len)
+            logger.error(f"Scraper: Fetching matches from: {padded_url}  :  ❌  Failed: {e}")
             continue
 
         soup = BeautifulSoup(resp.text, 'html.parser')
         match_elements = soup.select('.AY_Match, .match-container')
         # Filter out "No matches today" placeholders
         real_matches = [m for m in match_elements if not m.select_one('.no-data__msg')]
-        page_name = url.rstrip("/").split("/")[-1]
-        logger.info(f"Scraper: Found {len(real_matches)} matches on {page_name} page.")
+        
+        # Log fetch result aligned on a single line
+        icon = "✅" if len(real_matches) > 0 else "ℹ"
+        found_str = f"{icon}  Found {len(real_matches)} matches."
+            
+        padded_url = clean_url.ljust(max_url_len)
+        logger.info(f"Scraper: Fetching matches from: {padded_url}  :  {found_str}")
 
         for match in real_matches:
             classes = match.get('class', [])
@@ -474,8 +395,18 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
 
     logger.info(f"Scraper: Processing {len(matches_to_process)} total scraped matches...")
     
-    # Send only missing team names to OpenRouter
-    missing_team_names = [name for name in unique_team_names if name not in team_translations]
+    # Find missing team names, checking normalized cache
+    missing_team_names = []
+    alias_updates = []
+    for name in unique_team_names:
+        existing = find_existing_translation(name, team_translations)
+        if existing:
+            # Populate the direct key in memory
+            team_translations[name] = existing
+            continue
+            
+        # If we get here, it's truly a missing team name
+        missing_team_names.append(name)
     
     new_translations_list = []
     
@@ -485,11 +416,12 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
         
         # Merge new translations into cache
         for name in missing_team_names:
-            info = get_mapping_normalized(llm_mappings, name) or get_local_fallback_mapping(name)
+            info = find_existing_translation(name, llm_mappings) or {"nameEn": name, "code": "club"}
             
             # Determine logo URL and team type
             code = info.get("code", "club")
-            if code.islower() and len(code) == 2:
+            is_national = (code.islower() and len(code) == 2) or (code.lower() in ["gb-eng", "gb-sct", "gb-wls", "gb-nir"])
+            if is_national:
                 team_type = "national"
                 logo_url = f"https://flagcdn.com/{code.lower()}.svg"
             else:
@@ -504,11 +436,41 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
                         logo_url = m["team2_orig_img"]
                         break
             
+            # Additional safety: check if the resolved code is already present in cache (for both clubs and national teams!)
+            found_code_entry = None
+            for k, v in team_translations.items():
+                if v.get("code") == code:
+                    found_code_entry = v
+                    break
+            
+            if found_code_entry:
+                # Reuse existing entry, append to aliases in Sheets, and do not append a new row
+                orig_cell = found_code_entry.get("original_arabic_cell", "")
+                names_in_cell = [n.strip() for n in re.split(r'[|;\n,]', orig_cell)]
+                if name not in names_in_cell:
+                    new_val = f"{orig_cell} | {name}" if orig_cell else name
+                    alias_updates.append((found_code_entry["row_num"], found_code_entry["sheet_name"], new_val))
+                    found_code_entry["original_arabic_cell"] = new_val
+                
+                team_translations[name] = {
+                    "nameEn": found_code_entry["nameEn"],
+                    "code": code,
+                    "logo_url": found_code_entry["logo_url"],
+                    "type": found_code_entry["type"],
+                    "row_num": found_code_entry["row_num"],
+                    "sheet_name": found_code_entry["sheet_name"],
+                    "primary_arabic": found_code_entry["primary_arabic"],
+                    "original_arabic_cell": found_code_entry.get("original_arabic_cell")
+                }
+                continue
+            
             team_translations[name] = {
                 "nameEn": info.get("nameEn", ""),
                 "code": code,
                 "logo_url": logo_url,
-                "type": team_type
+                "type": team_type,
+                "primary_arabic": name,
+                "original_arabic_cell": name
             }
             new_translations_list.append((name, info.get("nameEn", ""), code, logo_url, team_type))
     else:
@@ -517,47 +479,147 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
 
     logger.success("Scraper: Translation completed. Resolving match detail iframes.")
 
-    # Group matches by event_id first
-    events_grouped = {}
+    # 1. Group raw scraped matches by team pair (order-independent)
+    now_dt = get_now_gmt1()
+    team_pairs = {}
     for match_data in matches_to_process:
         t1_name = match_data["team1_name"]
         t2_name = match_data["team2_name"]
         
-        t1_info = team_translations.get(t1_name) or get_local_fallback_mapping(t1_name)
-        t2_info = team_translations.get(t2_name) or get_local_fallback_mapping(t2_name)
+        t1_info = team_translations.get(t1_name) or {"nameEn": t1_name, "code": "club"}
+        t2_info = team_translations.get(t2_name) or {"nameEn": t2_name, "code": "club"}
         
         t1_code = t1_info.get("code", "club")
         t2_code = t2_info.get("code", "club")
-        formatted_time = parse_match_time(match_data["date_str"], match_data["time_str"])
-        event_id = generate_stable_event_id(t1_code, t2_code, formatted_time)
         
-        match_data["event_id"] = event_id
-        match_data["formatted_time"] = formatted_time
+        # Use codes if available, otherwise original names (sorted to make it order-independent)
+        if t1_code == "club" or t2_code == "club":
+            t1_key = t1_info.get("nameEn") or t1_name
+            t2_key = t2_info.get("nameEn") or t2_name
+            pair_key = tuple(sorted([t1_key, t2_key]))
+        else:
+            pair_key = tuple(sorted([t1_code, t2_code]))
+            
+        formatted_time = parse_match_time(match_data["date_str"], match_data["time_str"])
+        
+        kickoff_dt = datetime.min
+        try:
+            clean_time = re.sub(r'([+-]\d{2}:?\d{2}|Z)$', '', formatted_time)
+            kickoff_dt = datetime.fromisoformat(clean_time)
+        except Exception:
+            pass
+
+        # Apply basic self-correcting date adjustment relative to run time
+        status_class = match_data["status_class"]
+        if kickoff_dt != datetime.min:
+            domain = match_data['match_url'].split('//')[-1].split('/')[0]
+            if status_class in ["live", "not-started"] and (now_dt - kickoff_dt).total_seconds() > 6 * 3600:
+                old_time = formatted_time
+                kickoff_dt += timedelta(days=1)
+                formatted_time = kickoff_dt.strftime("%Y-%m-%dT%H:%M:%S+01:00")
+                logger.info(f"Date Drift: Corrected active match '{t1_name} vs {t2_name}' on {domain}\n       - Shifted forward from {format_to_human_time(old_time)} to {format_to_human_time(formatted_time)}")
+
         match_data["t1_info"] = t1_info
         match_data["t2_info"] = t2_info
+        match_data["t1_code"] = t1_code
+        match_data["t2_code"] = t2_code
+        match_data["formatted_time"] = formatted_time
+        match_data["kickoff_dt"] = kickoff_dt
         
-        events_grouped.setdefault(event_id, []).append(match_data)
+        team_pairs.setdefault(pair_key, []).append(match_data)
+
+    # 2. Cluster candidates for each team pair within 30 hours of each other
+    events_grouped = {}
+    for pair_key, match_list in team_pairs.items():
+        # Sort candidates by kickoff_dt (put datetime.min at the end)
+        match_list.sort(key=lambda m: (m["kickoff_dt"] == datetime.min, m["kickoff_dt"]))
+        
+        clusters = []
+        for match in match_list:
+            if not clusters:
+                clusters.append([match])
+            else:
+                # Compare kickoff with the first match in the last cluster
+                last_cluster = clusters[-1]
+                ref_match = last_cluster[0]
+                if match["kickoff_dt"] == datetime.min or ref_match["kickoff_dt"] == datetime.min:
+                    clusters.append([match])
+                else:
+                    time_diff = (match["kickoff_dt"] - ref_match["kickoff_dt"]).total_seconds()
+                    # If within 30 hours, they are the same match!
+                    if abs(time_diff) <= 30 * 3600:
+                        last_cluster.append(match)
+                    else:
+                        clusters.append([match])
+                        
+        # 3. For each cluster, determine the single best representative metadata (kickoff time, event_id)
+        for cluster in clusters:
+            # Sort candidates by status priority: live > not-started > finished
+            # Among candidates with the same status, choose the one with kickoff_dt closest to now_dt
+            def cluster_sort_key(m):
+                status_pri = get_status_priority(m["status_class"])
+                # We want higher status priority first (hence negative)
+                if m["kickoff_dt"] != datetime.min:
+                    time_delta = abs((m["kickoff_dt"] - now_dt).total_seconds())
+                else:
+                    time_delta = float('inf')
+                return (-status_pri, time_delta)
+                
+            cluster.sort(key=cluster_sort_key)
+            best_cand = cluster[0]
+            
+            # Generate the stable event_id for the group using the best representative's data
+            event_id = generate_stable_event_id(best_cand["t1_code"], best_cand["t2_code"], best_cand["formatted_time"])
+            
+            # Apply this event_id and best formatted_time to all candidates in the cluster
+            for m in cluster:
+                m["event_id"] = event_id
+                m["formatted_time"] = best_cand["formatted_time"]
+                m["kickoff_dt"] = best_cand["kickoff_dt"]
+                
+            events_grouped[event_id] = cluster
 
     # Log overlaps and unique matches
     print()
     logger.info("Scraper: Analyzing multi-source match details...")
+    log_items = []
+    max_event_len = 0
     for event_id, candidates in events_grouped.items():
         t1_name = candidates[0]["t1_info"].get("nameEn") or candidates[0]["team1_name"]
         t2_name = candidates[0]["t2_info"].get("nameEn") or candidates[0]["team2_name"]
-        event_name = f"{t1_name} vs {t2_name}"
+        
+        # Truncate individual team names if > 20 characters
+        if len(t1_name) > 20:
+            t1_name = t1_name[:17] + "..."
+        if len(t2_name) > 20:
+            t2_name = t2_name[:17] + "..."
+            
+        event_name = f"'{t1_name} vs {t2_name}'"
+        if len(event_name) > max_event_len:
+            max_event_len = len(event_name)
+            
+        count = len(candidates)
+        count_str = f"{count} websites" if count > 1 else f"{count} website"
+        padded_count = count_str.ljust(11)
         
         urls = [c["match_url"] for c in candidates]
         if len(candidates) > 1:
             domains = [url.split("//")[-1].split("/")[0] for url in urls]
-            logger.info(f"Overlap: '{event_name}' found on {len(candidates)} pages: {', '.join(domains)}")
+            domains_str = ", ".join(domains)
         else:
-            domain = urls[0].split("//")[-1].split("/")[0]
-            logger.info(f"Unique: '{event_name}' only found on: {domain}")
+            domains_str = urls[0].split("//")[-1].split("/")[0]
+            
+        log_items.append((len(candidates) > 1, event_name, padded_count, domains_str))
+        
+    for is_overlap, event_name, padded_count, domains_str in log_items:
+        padded_name = event_name.ljust(max_event_len)
+        prefix = "Overlap:" if is_overlap else "Unique: "
+        logger.info(f"{prefix} {padded_name}  :  {padded_count}  |  {domains_str}")
     print()
 
     parsed_matches = []
     updated_matches_cache = {}
-    now_dt = datetime.now()
+    now_dt = get_now_gmt1()
 
     has_logged_fetching = False
     for event_id, candidates in events_grouped.items():
@@ -598,6 +660,8 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
         is_far_future = False
         if overall_status_class == "not-started" and kickoff_dt != datetime.min:
             time_until_kickoff = (kickoff_dt - now_dt).total_seconds()
+            if time_until_kickoff > 24 * 3600: # > 24 hours away
+                continue
             if time_until_kickoff > 3 * 60 * 60: # > 3 hours away
                 is_far_future = True
 
@@ -669,12 +733,12 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
         parsed_matches.append({
             "event_id": event_id,
             "team1": {
-                "nameAr": t1_name,
+                "nameAr": t1_info.get("primary_arabic") or t1_name,
                 "nameEn": t1_info.get("nameEn", ""),
                 "img": team1_img
             },
             "team2": {
-                "nameAr": t2_name,
+                "nameAr": t2_info.get("primary_arabic") or t2_name,
                 "nameEn": t2_info.get("nameEn", ""),
                 "img": team2_img
             },
@@ -686,10 +750,10 @@ def scrape_live_matches(use_mock: bool = False, team_translations: dict = None, 
             "match_url": resolved_match_url
         })
 
-    return parsed_matches, new_translations_list, updated_matches_cache
+    return parsed_matches, new_translations_list, updated_matches_cache, alias_updates
 
 if __name__ == "__main__":
     # Test execution
     print("Running scraper module test (Mock Mode)...")
-    res, _, _ = scrape_live_matches(use_mock=True)
+    res, _, _, _ = scrape_live_matches(use_mock=True)
     print(json.dumps(res, indent=2, ensure_ascii=False))

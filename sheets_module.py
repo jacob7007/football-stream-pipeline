@@ -5,6 +5,7 @@ from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 import logger
+from utils import format_to_human_time
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -152,7 +153,7 @@ def update_changed_blogs(client: gspread.Client, changed_blogs: list, spreadshee
         # Update last_updated timestamp to current time in GMT+1
         from datetime import timezone, timedelta
         now_gmt1 = datetime.now(timezone.utc) + timedelta(hours=1)
-        blog["last_updated"] = f"{now_gmt1.day} {now_gmt1.strftime('%B')} - {now_gmt1.strftime('%H:%M')} (UTC+1)"
+        blog["last_updated"] = format_to_human_time(now_gmt1.isoformat())
         
         # Format the row list matching header positions
         row_data = [""] * len(headers)
@@ -177,96 +178,24 @@ def update_changed_blogs(client: gspread.Client, changed_blogs: list, spreadshee
 
 def fetch_team_translations_separated(client, spreadsheet_name: str = "Streaming Dashboard") -> dict:
     """
-    Fetches the team translations from '_cache_national_teams' and '_cache_clubs' worksheets.
-    If either doesn't exist, creates it with columns:
-    arabic_name, english_name, code, logo_url
-    Returns a dict mapping arabic_name -> {nameEn, code, logo_url, type}.
+    Delegates to translation_manager to load team translations.
     """
-    try:
-        sh = client.open(spreadsheet_name)
-    except gspread.exceptions.SpreadsheetNotFound:
-        try:
-            sh = client.open_by_key(spreadsheet_name)
-        except Exception:
-            raise ValueError(f"Spreadsheet '{spreadsheet_name}' not found by name or ID.")
-
-    translations = {}
-
-    # Helper to load a sheet
-    def load_sheet(sheet_name, type_label):
-        try:
-            worksheet = sh.worksheet(sheet_name)
-        except gspread.exceptions.WorksheetNotFound:
-            worksheet = sh.add_worksheet(title=sheet_name, rows="1000", cols="5")
-            worksheet.append_row(["arabic_name", "english_name", "code", "logo_url"])
-            return
-
-        all_values = worksheet.get_all_values()
-        if not all_values or len(all_values) <= 1:
-            return
-
-        headers = [h.strip().lower() for h in all_values[0]]
-        rows = all_values[1:]
-        header_map = {h: idx for idx, h in enumerate(headers)}
-
-        for row in rows:
-            padded_row = row + [""] * (len(headers) - len(row))
-            arabic_name = padded_row[header_map.get("arabic_name", 0)].strip()
-            if not arabic_name:
-                continue
-            translations[arabic_name] = {
-                "nameEn": padded_row[header_map.get("english_name", 1)].strip(),
-                "code": padded_row[header_map.get("code", 2)].strip(),
-                "logo_url": padded_row[header_map.get("logo_url", 3)].strip(),
-                "type": type_label
-            }
-
-    load_sheet("_cache_national_teams", "national")
-    load_sheet("_cache_clubs", "club")
-
-    return translations
+    import translation_manager
+    return translation_manager.load_team_translations(client, spreadsheet_name)
 
 def save_new_team_translations_separated(client, new_translations: list, spreadsheet_name: str = "Streaming Dashboard"):
     """
-    Appends new translation rows to either '_cache_national_teams' or '_cache_clubs' worksheet.
-    `new_translations` is a list of tuples/lists: [(arabic, english, code, logo_url, "national"|"club"), ...]
+    Delegates to translation_manager to save new team translations.
     """
-    if not new_translations:
-        return
+    import translation_manager
+    translation_manager.save_new_team_translations_separated(client, new_translations, spreadsheet_name)
 
-    try:
-        sh = client.open(spreadsheet_name)
-    except gspread.exceptions.SpreadsheetNotFound:
-        try:
-            sh = client.open_by_key(spreadsheet_name)
-        except Exception:
-            raise ValueError(f"Spreadsheet '{spreadsheet_name}' not found by name or ID.")
-
-    national_rows = []
-    club_rows = []
-
-    for trans in new_translations:
-        arabic, english, code, logo_url, team_type = trans
-        row = [arabic, english, code, logo_url]
-        if team_type == "national":
-            national_rows.append(row)
-        else:
-            club_rows.append(row)
-
-    def append_to_sheet(sheet_name, rows):
-        if not rows:
-            return
-        try:
-            worksheet = sh.worksheet(sheet_name)
-        except gspread.exceptions.WorksheetNotFound:
-            worksheet = sh.add_worksheet(title=sheet_name, rows="1000", cols="5")
-            worksheet.append_row(["arabic_name", "english_name", "code", "logo_url"])
-
-        worksheet.append_rows(rows)
-        logger.success(f"Sheets: Appended {len(rows)} new rows to '{sheet_name}'.")
-
-    append_to_sheet("_cache_national_teams", national_rows)
-    append_to_sheet("_cache_clubs", club_rows)
+def update_team_aliases(client, alias_updates: list, spreadsheet_name: str = "Streaming Dashboard"):
+    """
+    Delegates to translation_manager to update existing team aliases.
+    """
+    import translation_manager
+    translation_manager.update_team_aliases(client, alias_updates, spreadsheet_name)
 
 def fetch_matches_cache(client, spreadsheet_name: str = "Streaming Dashboard") -> dict:
     """
@@ -355,7 +284,7 @@ def save_matches_cache(client, matches_cache: dict, spreadsheet_name: str = "Str
     now = datetime.now()
     from datetime import timezone, timedelta
     now_gmt1 = datetime.now(timezone.utc) + timedelta(hours=1)
-    now_gmt1_str = f"{now_gmt1.day} {now_gmt1.strftime('%B')} - {now_gmt1.strftime('%H:%M')} (UTC+1)"
+    now_gmt1_str = format_to_human_time(now_gmt1.isoformat())
 
     valid_cache_rows = []
     
@@ -372,7 +301,7 @@ def save_matches_cache(client, matches_cache: dict, spreadsheet_name: str = "Str
             if out_time_str and not any(s in out_time_str for s in ("|", "-")):
                 try:
                     dt = parse_user_styled_time(out_time_str)
-                    out_time_str = f"{dt.day} {dt.strftime('%B')} - {dt.strftime('%H:%M')} (UTC+1)"
+                    out_time_str = format_to_human_time(dt.isoformat())
                 except Exception:
                     out_time_str = now_gmt1_str
             elif not out_time_str:

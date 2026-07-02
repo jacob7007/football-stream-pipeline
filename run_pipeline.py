@@ -3,22 +3,7 @@ import sys
 import json
 import argparse
 from datetime import datetime
-
-# Load local .env file if it exists
-def load_env():
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    if os.path.exists(env_path):
-        with open(env_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                if '=' in line:
-                    key, val = line.split('=', 1)
-                    key = key.strip()
-                    val = val.strip().strip('"').strip("'")
-                    if key and key not in os.environ:
-                        os.environ[key] = val
+from utils import format_to_human_time, load_env, send_telegram_message
 
 load_env()
 
@@ -41,17 +26,6 @@ BLOG_DATA_ID = os.environ.get("BLOG_DATA_ID")
 DATA_PAGE_ID = os.environ.get("DATA_PAGE_ID")
 
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "Streaming Dashboard")
-
-def send_telegram_message(bot_token, chat_id, text):
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
-    try:
-        r = requests.post(url, json=payload, timeout=10)
-        if r.status_code != 200:
-            logger.error(f"Telegram: sendMessage failed (HTTP {r.status_code}): {r.text}")
-    except Exception as e:
-        logger.error(f"Telegram: Failed to send message: {e}")
-
 
 
 def main():
@@ -127,7 +101,7 @@ def main():
             status_color = logger.COLOR_GREEN if blog_status == "active" else logger.COLOR_DARK_GRAY
             status_styled = f"{status_color}{blog_status:<8}{logger.COLOR_RESET}"
             
-            print(f"    Blog: {blog_name:<{max_blog_len}} | ID: {s['post_id']:<{max_id_len}} | Event: {aligned_ev} | Status: {status_styled}")
+            print(f"  Blog: {blog_name:<{max_blog_len}}  |  ID: {s['post_id']:<{max_id_len}}  |  Event: {aligned_ev}  |  Status: {status_styled}")
             
     except Exception as e:
         logger.error(f"Error reading Google Sheet: {e}")
@@ -151,7 +125,7 @@ def main():
     # 3. Scrape live matches
     logger.step_header("3/7", "Scraping competitor live matches")
     try:
-        scraped_events, new_translations, updated_matches_cache = scraper_module.scrape_live_matches(
+        scraped_events, new_translations, updated_matches_cache, alias_updates = scraper_module.scrape_live_matches(
             use_mock=args.mock,
             team_translations=team_translations,
             matches_cache=matches_cache
@@ -192,8 +166,8 @@ def main():
                 status_styled = f"{status:<11}"
                 
             # User friendly kickoff format
-            kickoff_str = reconciler.format_to_user_style(ev['time'])
-            print(f"    [{idx:2d}] {aligned_teams} | {kickoff_str} | {status_styled} | {iframe_part}")
+            kickoff_str = format_to_human_time(ev['time'])
+            print(f"  [{idx:2d}] {aligned_teams}  |  {kickoff_str}  |  {status_styled}  |  {iframe_part}")
             
     except Exception as e:
         logger.error(f"Error during scraping: {e}")
@@ -208,6 +182,13 @@ def main():
                 sheets_module.save_new_team_translations_separated(sheets_client, new_translations, args.sheet)
             except Exception as e:
                 logger.error(f"Error saving translations: {e}")
+        if alias_updates:
+            print()
+            logger.info(f"Saving {len(alias_updates)} alias updates back to Google Sheets...")
+            try:
+                sheets_module.update_team_aliases(sheets_client, alias_updates, args.sheet)
+            except Exception as e:
+                logger.error(f"Error saving alias updates: {e}")
         if updated_matches_cache:
             print()
             logger.info(f"Saving {len(updated_matches_cache)} matches cache back to Google Sheets...")
@@ -215,6 +196,18 @@ def main():
                 sheets_module.save_matches_cache(sheets_client, updated_matches_cache, args.sheet)
             except Exception as e:
                 logger.error(f"Error saving matches cache: {e}")
+    else:
+        # Dry-run previews
+        if new_translations:
+            print()
+            logger.info(f"[Dry Run Preview] Would save {len(new_translations)} new translations to Google Sheets:")
+            for item in new_translations:
+                logger.info(f"  - {item}")
+        if alias_updates:
+            print()
+            logger.info(f"[Dry Run Preview] Would save {len(alias_updates)} alias updates to Google Sheets:")
+            for row_num, sheet_name, new_val in alias_updates:
+                logger.info(f"  - Sheet '{sheet_name}' Row {row_num}: '{new_val}'")
 
     # Set up Telegram reporting if requested
     TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -320,7 +313,7 @@ def main():
             elif action_type in ["update_sheet_only"]:
                 event_name = f"{event['team1'].get('nameEn') or event['team1']['nameAr']} vs {event['team2'].get('nameEn') or event['team2']['nameAr']}"
                 blog["event_name"] = event_name
-                blog["kickoff_time"] = reconciler.format_to_user_style(event["time"])
+                blog["kickoff_time"] = format_to_human_time(event["time"])
                 blog["status"] = "active"
                 changed_blogs.append(blog)
 
@@ -329,7 +322,7 @@ def main():
                 blog["event_id"] = event["event_id"]
                 blog["event_name"] = event_name
                 blog["iframe_url"] = event["iframe_url"]
-                blog["kickoff_time"] = reconciler.format_to_user_style(event["time"])
+                blog["kickoff_time"] = format_to_human_time(event["time"])
                 blog["status"] = "active"
                 changed_blogs.append(blog)
 
@@ -470,12 +463,12 @@ def main():
         link_str = m['link']
         if len(link_str) > 60:
             link_str = link_str[:60] + "..."
-        print(f"    [{m['id']:2d}] {aligned_teams} -> Link: {link_str}")
+        print(f"  [{m['id']:2d}] {aligned_teams}  ->  Link: {link_str}")
         
     print()
 
     # Patch Blog DATA Matches Page
-    logger.info(f"Fetching the data website Matches Page ID {DATA_PAGE_ID} from Blog {BLOG_DATA_ID}...")
+    logger.info("Fetching the data website...")
     try:
         page_data = blogger_module.fetch_page(blogger_session, BLOG_DATA_ID, DATA_PAGE_ID)
         page_content = page_data.get("content", "")
@@ -483,12 +476,12 @@ def main():
         patched_page_content = patcher.patch_matches_page(page_content, active_matches_list)
         
         if patched_page_content == page_content:
-            logger.success("Matches list page content is already up to date. Skipping Blogger update.")
+            logger.success("Matches list is already up to date. Skipping Blogger update.")
         else:
             if args.dry_run:
-                logger.info("[Dry Run Preview] Would update the data website Matches Page content on Blogger (content changed).")
+                logger.info("[Dry Run Preview] Would update the data website content on Blogger (content changed).")
             else:
-                logger.info("Updating the data website Matches Page content (content changed)...")
+                logger.info("Updating the data website content (content changed)...")
                 blogger_module.update_page(blogger_session, BLOG_DATA_ID, DATA_PAGE_ID, patched_page_content)
                 logger.success("Matches list page successfully updated.")
     except Exception as e:

@@ -1,6 +1,7 @@
 import sys
 import re
 from datetime import datetime
+from utils import format_to_human_time
 
 # Reconfigure stdout/stderr to use UTF-8
 sys.stdout.reconfigure(encoding='utf-8')
@@ -23,21 +24,6 @@ def parse_iso_time(time_str: str) -> datetime:
         except Exception:
             return datetime.min
 
-def format_to_user_style(iso_time_str: str) -> str:
-    """
-    Converts ISO 8601 time string (GMT+1) to user format: "29 July - 21:00 (UTC+1)"
-    """
-    if not iso_time_str:
-        return ""
-    try:
-        clean_str = re.sub(r'([+-]\d{2}:?\d{2}|Z)$', '', iso_time_str.strip())
-        dt = datetime.fromisoformat(clean_str)
-        day = dt.day
-        month_name = dt.strftime("%B")
-        time_part = dt.strftime("%H:%M")
-        return f"{day} {month_name} - {time_part} (UTC+1)"
-    except Exception:
-        return iso_time_str
 
 def reconcile_state(sheet_blogs: list, scraped_events: list) -> list:
     """
@@ -180,7 +166,7 @@ def reconcile_state(sheet_blogs: list, scraped_events: list) -> list:
             sheet_name = blog.get("event_name", "").strip()
             sheet_kickoff = blog.get("kickoff_time", "").strip()
             
-            expected_kickoff = format_to_user_style(event["time"])
+            expected_kickoff = format_to_human_time(event["time"])
             if sheet_name != event_name or sheet_kickoff != expected_kickoff:
                 actions.append({
                     "action_type": "update_sheet_only",

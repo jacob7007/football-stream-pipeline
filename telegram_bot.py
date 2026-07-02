@@ -4,22 +4,7 @@ import json
 import subprocess
 from datetime import datetime
 import requests
-
-# Load local .env file if it exists
-def load_env():
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    if os.path.exists(env_path):
-        with open(env_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                if '=' in line:
-                    key, val = line.split('=', 1)
-                    key = key.strip()
-                    val = val.strip().strip('"').strip("'")
-                    if key and key not in os.environ:
-                        os.environ[key] = val
+from utils import load_env, send_telegram_message
 
 load_env()
 
@@ -33,15 +18,6 @@ import logger
 BLOG_PLAYER_ID = os.environ.get("BLOG_PLAYER_ID")
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "Streaming Dashboard")
 
-def send_telegram_message(bot_token, chat_id, text):
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
-    try:
-        r = requests.post(url, json=payload, timeout=10)
-        if r.status_code != 200:
-            logger.error(f"Telegram: sendMessage failed (HTTP {r.status_code}): {r.text}")
-    except Exception as e:
-        logger.error(f"Telegram: Failed to send message: {e}")
 
 def main():
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
